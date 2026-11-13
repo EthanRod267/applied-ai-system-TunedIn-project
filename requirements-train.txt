@@ -1,0 +1,6 @@
+# Extra packages for fine-tuning the mood classifier (training/train_mood.py).
+# Install on top of requirements.txt: pip install -r requirements-train.txt
+torch
+transformers
+datasets
+accelerate

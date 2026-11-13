@@ -1,6 +1,6 @@
 import csv
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 @dataclass
 class Song:
@@ -29,6 +29,7 @@ class UserProfile:
     favorite_mood: str
     target_energy: float
     likes_acoustic: bool
+    target_valence: Optional[float] = None
 
 class Recommender:
     """
@@ -39,12 +40,18 @@ class Recommender:
         self.songs = songs
 
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        # TODO: Implement recommendation logic
-        return self.songs[:k]
+        """Returns the k best-scoring songs for this user, highest first."""
+        prefs = asdict(user)
+        return sorted(
+            self.songs,
+            key=lambda song: score_song(prefs, asdict(song))[0],
+            reverse=True,
+        )[:k]
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        # TODO: Implement explanation logic
-        return "Explanation placeholder"
+        """Returns the scoring reasons for one song as a single readable string."""
+        score, reasons = score_song(asdict(user), asdict(song))
+        return f"Score {score:.2f}: " + "; ".join(reasons)
 
 def load_songs(csv_path: str) -> List[Dict]:
     """Reads the songs CSV into a list of dicts, converting numeric columns to int/float."""
@@ -68,11 +75,13 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
 
     # Weights: genre match = 0.75 points, mood match = 1.0 point,
     # energy closeness = up to 4.0 points, acoustic fit = up to 0.5 points
-    # (max total 6.25)
+    # (max total 6.25), plus valence closeness = up to 2.0 points when the
+    # profile has a target_valence (max total 8.25)
     GENRE_POINTS = 0.75
     MOOD_POINTS = 1.0
     ENERGY_POINTS = 4.0
     ACOUSTIC_POINTS = 0.5
+    VALENCE_POINTS = 2.0
 
     if song["genre"] == user_prefs.get("favorite_genre"):
         score += GENRE_POINTS
@@ -91,6 +100,16 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
         energy_score = ENERGY_POINTS * similarity
         score += energy_score
         reasons.append(f"Energy closeness (+{energy_score:.2f})")
+
+    # Valence (how positive a song sounds) is the strongest mood signal.
+    # Same closeness rule as energy. Profiles without target_valence skip it,
+    # so the original CLI profiles score exactly as before.
+    target_valence = user_prefs.get("target_valence")
+    if target_valence is not None:
+        similarity = max(0.0, 1.0 - abs(song["valence"] - target_valence)) ** 2
+        valence_score = VALENCE_POINTS * similarity
+        score += valence_score
+        reasons.append(f"Valence closeness (+{valence_score:.2f})")
 
     # Acoustic fit: acoustic fans earn points for high acousticness,
     # everyone else for low acousticness.
