@@ -82,6 +82,7 @@ class BotReply:
     picks: List[Dict] = field(default_factory=list)       # recommended song dicts, in the order the reply mentions them
     emotion: Optional[str] = None
     mood_source: Optional[str] = None                     # keyword / fine-tuned / gemini
+    mood_confidence: Optional[float] = None               # 0-1 from the local model; Gemini reports 1.0
     profile: Optional[Dict] = None
     retrieved_ids: List[int] = field(default_factory=list)
     reply_source: str = "none"                            # gemini / fallback / crisis / empty
@@ -226,6 +227,7 @@ class TunedInBot:
             text="",
             emotion=prediction.emotion,
             mood_source=prediction.source,
+            mood_confidence=prediction.confidence,
             profile=prediction.profile,
             retrieved_ids=[s["id"] for s, _, _ in hits],
             errors=errors,

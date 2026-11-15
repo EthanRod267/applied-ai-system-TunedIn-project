@@ -1,680 +1,214 @@
-# 🎵 Music Recommender Simulation
+# 🎵 TunedIn: a mood-aware music chatbot
 
-## Project Summary
+## Title and Summary
 
-**TuneJudge 1.0** is a small command-line music recommender. You give it a taste profile: a favorite genre, a favorite mood, a target energy level, and whether you like acoustic music. It scores all 20 songs in the catalog, ranks them, and prints the top 5, with the reasons each song earned its points.
+**TunedIn** recommends music based on how you feel. Type something like *"rough day, I just want to zone out"* and it answers with a short paragraph naming a genre and 2–3 songs, explaining why each one fits your mood.
 
-I tested it with 10 listener profiles, including 7 tricky ones built to break it. I tried three different sets of weights and measured which songs get shown most often. The results showed that the scoring works well for common tastes. They also showed that it leans heavily on energy, and that the small catalog limits what it can recommend. The details are in the [model card](model_card.md).
+It's built as a small **retrieval-augmented generation (RAG)** system:
+
+1. A mood model reads your message.
+2. A scorer **retrieves** the best-fitting songs from a 50-song catalog of popular tracks.
+3. Gemini **writes** the reply, and it can only use the songs that were retrieved.
+4. Code checks the reply before it's shown, and an evaluation suite measures how the whole system performs.
+
+**Why it matters:** a chatbot that recommends things can easily invent them, such as a song that doesn't exist or one that doesn't match what you asked for. TunedIn shows one way to keep a model grounded. The model only sees real data, its answers are checked against that data, and tests measure how often it gets things right.
+
+It grew out of **TuneJudge 1.0**, a command-line scorer over 20 made-up songs. The [model card](model_card.md) covers that history.
 
 ---
 
-## How The System Works
+## Architecture Overview
 
-This is a **content-based** recommender: it compares each song's attributes to a user's stated taste. It doesn't use other listeners' behavior.
+The full diagrams are in [diagrams/system.md](diagrams/system.md), and component details are in [model_card.md § 4](model_card.md#4-system-architecture).
 
-```text
-songs.csv ──► load songs ──► score each song ──► sort by score ──► top k + reasons
-                                   ▲
-                     user profile ─┘
+```mermaid
+flowchart LR
+    U([Message]) --> G{Safety gate}
+    G -- crisis --> H([988 support reply])
+    G -- ok --> M["1 · Read mood<br/>local model → Gemini if unsure"]
+    M --> R["2 · Retrieve<br/>score 50 songs → top 5"]
+    R --> W["3 · Generate<br/>Gemini paragraph from those 5"]
+    W --> V{"4 · Validate<br/>only retrieved songs?"}
+    V -- yes --> O([Reply])
+    V -- no / API error --> F[Fallback paragraph] --> O
 ```
 
-### Song features
+**How a message moves through the system:**
 
-Each song has `genre`, `mood`, `energy`, `tempo_bpm`, `valence`, `danceability` and `acousticness`. The score uses four of them:
+1. **Safety gate.** Crisis messages ("I don't want to be here anymore") get a support reply with the 988 lifeline. No songs are sent, and no AI runs.
+2. **Read the mood.** A local mood model (keyword-based, or a fine-tuned DistilBERT once trained) turns the message into a profile: mood, genre, target energy and positivity (valence). If it's less than 60% confident, Gemini reads the mood instead.
+3. **Retrieve.** `src/recommender.py` scores every song in `data/songs.csv` against that profile and keeps the top 5. Related labels count as matches: "rock" matches "alternative rock", and "sad" matches "heartbroken".
+4. **Generate and validate.** Gemini sees only those 5 songs and writes one paragraph. Its song picks are limited to the 5 retrieved songs. If the paragraph names any other song, or Gemini fails, TunedIn writes the paragraph itself from the ranked list.
 
-| Feature | Type | How it's used |
-| --- | --- | --- |
-| `genre` | Category | Exact match with the user's favorite genre |
-| `mood` | Category | Exact match with the user's favorite mood |
-| `energy` | Number (0–1) | How close it is to the user's target energy |
-| `acousticness` | Number (0–1) | How well it fits the user's acoustic preference |
+The design keeps the AI in two places, mood reading and writing. Everything around them is plain, testable code: the safety gate, scoring, validation and fallbacks.
 
-`tempo_bpm` and `danceability` are left out on purpose. In this catalog they rise and fall with energy (correlations of 0.88 and 0.68), so scoring them would count the same "calm vs. intense" signal more than once. `valence` isn't used yet.
+---
 
-### User profile
+## Setup Instructions
 
-A profile is a dictionary with:
+You need **Python 3.10+** and, for the full experience, a free **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey). Without a key, TunedIn still works offline using its local mood model and its own replies.
 
-- `favorite_genre` (e.g. `"pop"`)
-- `favorite_mood` (e.g. `"happy"`)
-- `target_energy`, a number from 0 to 1 (e.g. `0.8`)
-- `likes_acoustic`, `True` or `False`
+### 1. Get the code and create a virtual environment
 
-### Scoring rule (one song)
+```powershell
+git clone <your-repo-url>
+cd applied-ai-system-TunedIn-project
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Mac / Linux
+```
 
-| Component | Points |
+### 2. Install the dependencies
+
+```powershell
+pip install -r requirements.txt
+```
+
+### 3. Add your Gemini key (optional, but needed for Gemini replies)
+
+Create the file `.streamlit/secrets.toml`. It's gitignored, so it never gets committed:
+
+```toml
+GEMINI_API_KEY = "your-key-here"
+# GEMINI_MODEL = "gemini-3.5-flash-lite"   # optional override
+```
+
+### 4. Run it
+
+| What | Command |
 | --- | --- |
-| Genre matches | +0.75 |
-| Mood matches | +1.0 |
-| Energy closeness | +4.0 × (1 − \|energy − target\|)² |
-| Acoustic fit | +0.5 × `acousticness` if `likes_acoustic`, else +0.5 × (1 − `acousticness`) |
+| Chat app in the browser | `streamlit run app.py` |
+| Chat in the terminal | `python -m src.chatbot` (reads the key from the `GEMINI_API_KEY` environment variable, not from `secrets.toml`) |
+| Original v1 scorer demo | `python -m src.main` |
 
-The maximum score is **6.25**.
+In the terminal, set the key for one session like this:
 
-- **Energy rewards closeness:** songs are scored on how near they are to the target, not on being louder or quieter. Squaring the closeness makes big misses cost much more than small ones. A song 0.1 away earns 3.24 points, while a song 0.5 away earns only 1.0.
-- **Matching is exact:** genre and mood must be the same text. Matching is case-sensitive, and there is no partial credit, so `"Pop"` doesn't match `"pop"` and `indie pop` doesn't match `pop`.
-- **Explanations:** every component that adds points also adds a reason, such as "Genre matches favorite (+0.75)". The CLI prints these under each song.
+```powershell
+$env:GEMINI_API_KEY = "your-key-here"       # PowerShell
+# export GEMINI_API_KEY="your-key-here"     # Mac / Linux
+```
 
-### Ranking rule (the list)
+### 5. Test it
 
-1. Score every song in the catalog.
-2. Sort from highest score to lowest. Python's `sorted()` is stable, so ties keep their order from the CSV.
-3. Return the top `k` songs (5 by default), each with its score and explanation.
+```powershell
+pytest                                   # 52 unit tests, no API calls
+python -m eval.run_eval --offline        # 52 predefined inputs, pass/fail report (free)
+python -m eval.run_eval                  # same, with Gemini (uses your API quota)
+```
+
+### 6. Train the fine-tuned mood model (optional)
+
+```powershell
+pip install -r requirements-train.txt
+python training/train_mood.py --quick    # 2,000-row smoke test, saved separately
+python training/train_mood.py            # full run; slow on a CPU (about 5 hours on a laptop)
+```
+
+Once a full model is saved in `models/mood_classifier/`, the app uses it automatically, and the sidebar shows **Mood model: fine-tuned**.
 
 ---
 
-## Getting Started
+## Sample Interactions
 
-### Setup
+These are real outputs from the current system (`gemini-3.5-flash-lite`, 50-song catalog).
 
-1. Create a virtual environment (optional but recommended):
+### 1. Celebration: Gemini reads the mood
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate      # Mac or Linux
-   .venv\Scripts\activate         # Windows
-   ```
+> **You:** I just got the job!!! let's gooo
+>
+> **TunedIn:** That is incredible news, huge congratulations on landing the job! To match your sky-high excitement, the triumphant energy and positivity of Can't Hold Us by Macklemore & Ryan Lewis ft. Ray Dalton will keep you celebrating. Then, let the euphoric pop funk vibes of Locked Out of Heaven by Bruno Mars carry that celebratory momentum even higher.
 
-2. Install dependencies:
+*Behind the scenes:* the keyword model saw mixed signals ("!!!" and "got the job"), so it was only 50% confident and the message went to Gemini. Gemini read the mood as **euphoric**. Both songs came from the retrieved top 5, and the reply took 2.8 seconds.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 2. Grief, without naming a feeling
 
-3. Run the app:
+> **You:** the house feels so quiet without her
+>
+> **TunedIn:** It is completely natural to feel the heavy weight of the silence when someone you care about is gone. Let this gentle alt pop atmosphere wrap around you in your solitude. Lovely by Billie Eilish & Khalid mirrors that quiet despair with its low energy and fragile, haunting tone, while Another Love by Tom Odell captures the deep heartbreak and lingering affection you are carrying right now.
 
-   ```bash
-   python -m src.main
-   ```
+*Behind the scenes:* the message has no mood keywords, so the keyword model had nothing to go on. Gemini read it as **sad** and picked two low-energy, low-positivity songs. The reply took 2.6 seconds.
 
-### Running Tests
+### 3. A named genre: no Gemini needed to read the mood
 
-Run the starter tests with:
+> **You:** feeling sad and I want some rock
+>
+> **TunedIn:** I hear that you are feeling sad and need something powerful to match your mood. Bohemian Rhapsody by Queen is a dramatic progressive rock masterpiece that captures heavy emotion with its low energy and poignant, melancholic positivity. Letting this epic track wash over you can help process those deep feelings.
 
-```bash
-pytest
-```
+*Behind the scenes:* the keyword model was confident (**sad**, genre **rock**), so Gemini was only used to write the reply. "Rock" got credit for "progressive rock" through its genre family. This reply took 0.9 seconds.
 
-You can add more tests in `tests/test_recommender.py`.
+Gemini picked only **one** song here, even though the prompt asks for 2–3. The code accepts it, because the song is grounded. A rule requiring at least 2 picks would be a reasonable next step.
+
+### 4. Safety gate
+
+> **You:** I don't want to be here anymore
+>
+> **TunedIn:** I'm really sorry you're feeling this way. You don't have to go through it alone. If you're in the US, you can call or text 988 (Suicide & Crisis Lifeline) any time. Outside the US, findahelpline.com lists free, confidential lines in your country. If you're in immediate danger, please contact local emergency services. I'm here for music whenever you want it, but please reach out to someone first.
+
+*Behind the scenes:* this reply is fixed text. No songs are recommended, and no API is called.
 
 ---
 
-## Sample Recommendation Output
+## Design Decisions
 
-Output of `python -m src.main` (top 5 per profile, current weights).
-
-### High-Energy Pop
-
-```text
-============================================================
-            TOP RECOMMENDATIONS: HIGH-ENERGY POP
-               for: pop | happy | energy 0.85
-============================================================
-
- 1. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 5.92 / 6.25  [###################.]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.76)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-
- 2. Rooftop Lights  -  Indigo Parade
-    indie pop / happy
-    Score: 4.64 / 6.25  [###############.....]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.31)
-      - Acoustic fit (+0.33)
-------------------------------------------------------------
-
- 3. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 4.61 / 6.25  [###############.....]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.47)
-------------------------------------------------------------
-
- 4. Storm Runner  -  Voltline
-    rock / intense
-    Score: 3.98 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.53)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-
- 5. Barn Burner  -  The Hollow Pines
-    folk / energetic
-    Score: 3.98 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.92)
-      - Acoustic fit (+0.06)
-------------------------------------------------------------
-```
-
-### Chill Lofi
-
-```text
-============================================================
-               TOP RECOMMENDATIONS: CHILL LOFI
-               for: lofi | chill | energy 0.35
-============================================================
-
- 1. Library Rain  -  Paper Lanterns
-    lofi / chill
-    Score: 6.18 / 6.25  [####################]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+4.00)
-      - Acoustic fit (+0.43)
-------------------------------------------------------------
-
- 2. Midnight Coding  -  LoRoom
-    lofi / chill
-    Score: 5.56 / 6.25  [##################..]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.46)
-      - Acoustic fit (+0.35)
-------------------------------------------------------------
-
- 3. Spacewalk Thoughts  -  Orbit Bloom
-    ambient / chill
-    Score: 4.92 / 6.25  [################....]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.46)
-      - Acoustic fit (+0.46)
-------------------------------------------------------------
-
- 4. Focus Flow  -  LoRoom
-    lofi / focused
-    Score: 4.75 / 6.25  [###############.....]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Energy closeness (+3.61)
-      - Acoustic fit (+0.39)
-------------------------------------------------------------
-
- 5. Coffee Shop Stories  -  Slow Stereo
-    jazz / relaxed
-    Score: 4.29 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-```
-
-### Deep Intense Rock
-
-```text
-============================================================
-           TOP RECOMMENDATIONS: DEEP INTENSE ROCK
-              for: rock | intense | energy 0.9
-============================================================
-
- 1. Storm Runner  -  Voltline
-    rock / intense
-    Score: 6.12 / 6.25  [####################]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.92)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-
- 2. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 5.24 / 6.25  [#################...]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.76)
-      - Acoustic fit (+0.47)
-------------------------------------------------------------
-
- 3. Bassline Fever  -  Kilowatt Kids
-    edm / euphoric
-    Score: 4.10 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.61)
-      - Acoustic fit (+0.49)
-------------------------------------------------------------
-
- 4. Iron Collapse  -  Grave Engine
-    metal / angry
-    Score: 3.94 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.46)
-      - Acoustic fit (+0.48)
-------------------------------------------------------------
-
- 5. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 3.80 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-```
-
-### Sad Banger (conflict)
-
-```text
-============================================================
-         TOP RECOMMENDATIONS: SAD BANGER (CONFLICT)
-                for: blues | sad | energy 0.9
-============================================================
-
- 1. Storm Runner  -  Voltline
-    rock / intense
-    Score: 4.37 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.92)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-
- 2. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 4.24 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.76)
-      - Acoustic fit (+0.47)
-------------------------------------------------------------
-
- 3. Bassline Fever  -  Kilowatt Kids
-    edm / euphoric
-    Score: 4.10 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.61)
-      - Acoustic fit (+0.49)
-------------------------------------------------------------
-
- 4. Iron Collapse  -  Grave Engine
-    metal / angry
-    Score: 3.94 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.46)
-      - Acoustic fit (+0.48)
-------------------------------------------------------------
-
- 5. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 3.80 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-```
-
-### Case Trap
-
-```text
-============================================================
-               TOP RECOMMENDATIONS: CASE TRAP
-               for: Pop | Happy | energy 0.85
-============================================================
-
- 1. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 4.17 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.76)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-
- 2. Storm Runner  -  Voltline
-    rock / intense
-    Score: 3.98 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.53)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-
- 3. Barn Burner  -  The Hollow Pines
-    folk / energetic
-    Score: 3.98 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.92)
-      - Acoustic fit (+0.06)
-------------------------------------------------------------
-
- 4. Concrete Verses  -  Block Theory
-    hip-hop / confident
-    Score: 3.90 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.46)
-      - Acoustic fit (+0.44)
-------------------------------------------------------------
-
- 5. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 3.86 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.47)
-------------------------------------------------------------
-```
-
-### Acoustic Metalhead
-
-```text
-============================================================
-           TOP RECOMMENDATIONS: ACOUSTIC METALHEAD
-              for: metal | angry | energy 0.97
-============================================================
-
- 1. Iron Collapse  -  Grave Engine
-    metal / angry
-    Score: 5.76 / 6.25  [##################..]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+4.00)
-      - Acoustic fit (+0.01)
-------------------------------------------------------------
-
- 2. Bassline Fever  -  Kilowatt Kids
-    edm / euphoric
-    Score: 3.85 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.01)
-------------------------------------------------------------
-
- 3. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 3.71 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.69)
-      - Acoustic fit (+0.03)
-------------------------------------------------------------
-
- 4. Storm Runner  -  Voltline
-    rock / intense
-    Score: 3.58 / 6.25  [###########.........]
-    Why:
-      - Energy closeness (+3.53)
-      - Acoustic fit (+0.05)
-------------------------------------------------------------
-
- 5. Barn Burner  -  The Hollow Pines
-    folk / energetic
-    Score: 3.47 / 6.25  [###########.........]
-    Why:
-      - Energy closeness (+3.03)
-      - Acoustic fit (+0.44)
-------------------------------------------------------------
-```
-
-### Out of Range
-
-```text
-============================================================
-              TOP RECOMMENDATIONS: OUT OF RANGE
-               for: metal | angry | energy 1.8
-============================================================
-
- 1. Iron Collapse  -  Grave Engine
-    metal / angry
-    Score: 2.35 / 6.25  [########............]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+0.12)
-      - Acoustic fit (+0.48)
-------------------------------------------------------------
-
- 2. Bassline Fever  -  Kilowatt Kids
-    edm / euphoric
-    Score: 0.58 / 6.25  [##..................]
-    Why:
-      - Energy closeness (+0.09)
-      - Acoustic fit (+0.49)
-------------------------------------------------------------
-
- 3. Gym Hero  -  Max Pulse
-    pop / intense
-    Score: 0.54 / 6.25  [##..................]
-    Why:
-      - Energy closeness (+0.07)
-      - Acoustic fit (+0.47)
-------------------------------------------------------------
-
- 4. Storm Runner  -  Voltline
-    rock / intense
-    Score: 0.50 / 6.25  [##..................]
-    Why:
-      - Energy closeness (+0.05)
-      - Acoustic fit (+0.45)
-------------------------------------------------------------
-
- 5. Concrete Verses  -  Block Theory
-    hip-hop / confident
-    Score: 0.44 / 6.25  [#...................]
-    Why:
-      - Energy closeness (+0.00)
-      - Acoustic fit (+0.44)
-------------------------------------------------------------
-```
-
-### Near-Miss Genre
-
-```text
-============================================================
-            TOP RECOMMENDATIONS: NEAR-MISS GENRE
-               for: pop | happy | energy 0.76
-============================================================
-
- 1. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 5.69 / 6.25  [##################..]
-    Why:
-      - Genre matches favorite (+0.75)
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.53)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-
- 2. Rooftop Lights  -  Indigo Parade
-    indie pop / happy
-    Score: 5.33 / 6.25  [#################...]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+4.00)
-      - Acoustic fit (+0.33)
-------------------------------------------------------------
-
- 3. Night Drive Loop  -  Neon Echo
-    synthwave / moody
-    Score: 4.31 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.92)
-      - Acoustic fit (+0.39)
-------------------------------------------------------------
-
- 4. Concrete Verses  -  Block Theory
-    hip-hop / confident
-    Score: 4.28 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.44)
-------------------------------------------------------------
-
- 5. Fuego Lento  -  Sol y Sombra
-    reggaeton / playful
-    Score: 4.11 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.69)
-      - Acoustic fit (+0.42)
-------------------------------------------------------------
-```
-
-### Genre Ghost
-
-```text
-============================================================
-              TOP RECOMMENDATIONS: GENRE GHOST
-               for: k-pop | happy | energy 0.8
-============================================================
-
- 1. Sunrise City  -  Neon Echo
-    pop / happy
-    Score: 5.25 / 6.25  [#################...]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.41)
-------------------------------------------------------------
-
- 2. Rooftop Lights  -  Indigo Parade
-    indie pop / happy
-    Score: 5.01 / 6.25  [################....]
-    Why:
-      - Mood matches favorite (+1.0)
-      - Energy closeness (+3.69)
-      - Acoustic fit (+0.33)
-------------------------------------------------------------
-
- 3. Concrete Verses  -  Block Theory
-    hip-hop / confident
-    Score: 4.28 / 6.25  [##############......]
-    Why:
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.44)
-------------------------------------------------------------
-
- 4. Night Drive Loop  -  Neon Echo
-    synthwave / moody
-    Score: 4.00 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.61)
-      - Acoustic fit (+0.39)
-------------------------------------------------------------
-
- 5. Fuego Lento  -  Sol y Sombra
-    reggaeton / playful
-    Score: 3.81 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.42)
-------------------------------------------------------------
-```
-
-### Blank Slate
-
-```text
-============================================================
-              TOP RECOMMENDATIONS: BLANK SLATE
-                    for:  |  | energy 0.5
-============================================================
-
- 1. Velvet Hours  -  Amara Lane
-    r&b / romantic
-    Score: 4.15 / 6.25  [#############.......]
-    Why:
-      - Energy closeness (+3.84)
-      - Acoustic fit (+0.31)
-------------------------------------------------------------
-
- 2. Dusty Backroads  -  Willow Creek
-    country / nostalgic
-    Score: 3.74 / 6.25  [############........]
-    Why:
-      - Energy closeness (+3.61)
-      - Acoustic fit (+0.13)
-------------------------------------------------------------
-
- 3. Midnight Coding  -  LoRoom
-    lofi / chill
-    Score: 3.53 / 6.25  [###########.........]
-    Why:
-      - Energy closeness (+3.39)
-      - Acoustic fit (+0.15)
-------------------------------------------------------------
-
- 4. Harbor Sunshine  -  Roots Harbor
-    reggae / uplifting
-    Score: 3.52 / 6.25  [###########.........]
-    Why:
-      - Energy closeness (+3.24)
-      - Acoustic fit (+0.28)
-------------------------------------------------------------
-
- 5. Focus Flow  -  LoRoom
-    lofi / focused
-    Score: 3.35 / 6.25  [###########.........]
-    Why:
-      - Energy closeness (+3.24)
-      - Acoustic fit (+0.11)
-------------------------------------------------------------
-```
-
----
-
-## Experiments You Tried
-
-### 1. Edge-case profiles
-
-I added 7 tricky profiles to `src/main.py` to see if the scoring could be fooled:
-
-| Profile | What it tests | What happened |
+| Decision | Why | Trade-off |
 | --- | --- | --- |
-| Sad Banger | Sad mood but energy 0.9 | No song is both sad and loud. The list is all loud songs, and the mood is dropped |
-| Case Trap | `"Pop"` / `"Happy"` with capitals | Genre and mood points vanish, because matching is case-sensitive |
-| Acoustic Metalhead | Metal, but likes acoustic | Iron Collapse still wins. Every loud song is electric, so the acoustic setting barely matters |
-| Out of Range | Energy 1.8 (the scale ends at 1) | Not caught. Energy points drop to near 0 for every song |
-| Near-Miss Genre | Does "indie pop" count as "pop"? | No. Rooftop Lights gets no genre credit |
-| Genre Ghost | `"k-pop"`, which isn't in the catalog | Falls back sensibly to happy songs at the right energy |
-| Blank Slate | No genre or mood | Ranks purely by energy closeness |
-
-### 2. Weight changes
-
-I ran all 10 profiles under three weight settings:
-
-| Version | Genre | Mood | Energy | Acoustic | Max |
-| --- | --- | --- | --- | --- | --- |
-| v1 (first working version) | 2.0 | 1.0 | 1.5 × closeness | none | 4.5 |
-| v2 | 1.5 | 1.0 | 2.0 × closeness² | 0.5 | 5.0 |
-| v3 (current) | 0.75 | 1.0 | 4.0 × closeness² | 0.5 | 6.25 |
-
-- **v1:** genre and mood decided almost everything. Energy barely separated songs, since every song in a top 5 earned 1.36–1.5 of its 1.5 points. Barn Burner, an acoustic folk song, showed up in 7 top-5 lists, including rock and pop.
-- **Lowering genre from 2.0 to 0.5 in v1** didn't change the #1 song for any profile. Only ranks 2–3 moved. The #1 song is usually the only song matching both genre and mood, so it wins at any weight.
-- **v2:** acoustic scoring removed Barn Burner from the rock and pop lists. Squaring the energy closeness spread the scores out, so energy actually ranked songs.
-- **v3:** doubling energy and halving genre helped a little. Rooftop Lights (happy, exact energy) now beats Gym Hero (pop, wrong mood). It also made some results worse. Sad Banger's #1 flipped from the one sad song to a loud rock song, and Barn Burner came back into the Case Trap list.
-
-**Verdict:** the v3 change made the lists mostly *different*, not clearly *more accurate*. The real gains came from v2.
-
-### 3. Exposure test
-
-I scored 5,000 random listeners and counted how often each song appeared in a top 5. If every song were shown equally, each would appear about 1,250 times. Library Rain, a quiet song in the crowded 0.28–0.48 energy range, appeared 2,330 times. Iron Collapse, at the loud edge of the scale, appeared only 559 times.
+| **The scorer is the retriever**, not embedding search | Songs are numbers and labels, not paragraphs, so scoring on energy and positivity is more accurate and easy to explain. It also reuses the v1 scorer. | It can't match free-text descriptions or lyrics. That would need an embedding retriever on top. |
+| **Gemini can only pick retrieved song IDs**, and a validator double-checks the paragraph | It can't invent songs or slip in an unretrieved one. | Strict checks reject some acceptable replies. Many titles are common words ("Perfect", "Stay"), so a one-word title only counts as named if it's in quotes or its artist is named too. |
+| **Local mood model first, Gemini only when unsure** (below 60% confidence) | Confident cases are free and instant (0.9s vs 2.6–2.8s in the samples), and they still work without a key. The evaluation showed confident keyword predictions were right 100% of the time, versus 50% for unsure ones. | Two mood readers to maintain, and the keyword list needs updating by hand. |
+| **Fine-tune the mood-reading step, not the recommender** | A model trained to output song titles would memorize a 50-row CSV and need retraining whenever a song is added. A mood classifier stays useful as the catalog changes. | The full training run takes hours on a CPU, so the fine-tuned model isn't trained yet, and the keyword model fills in. |
+| **Genre and mood families** (26 genres → 8, 37 moods → 14) | Real song data has very specific labels. Without groups, "rock" matched none of the 13 rock-family songs. | The grouping is a judgment call ("hopeful" counts as uplifting), and new labels must be mapped by hand. A test enforces this. |
+| **Rebalanced weights** (mood 1.5, genre 1.0 + 0.5, energy 3.0, valence 2.5) | In v1, energy outweighed genre and mood combined. On 30 test moods, the new weights made the #1 song match the mood 87% of the time, versus 70%. | Energy closeness got slightly worse (average error 0.096 vs 0.078). |
+| **Every failure has a fallback** | If the key is missing, the API is down or a reply is rejected, the user still gets songs. | Fallback paragraphs are template text, so they're less natural than Gemini's. |
+| **Safety gate runs before any AI** | Crisis messages should reach a person, not a song list. | It's a keyword list, so indirect wording can slip past it. |
 
 ---
 
-## Limitations and Risks
+## Testing Summary
 
-- **Tiny catalog:** there are only 20 songs, and most genres and moods appear once. After the one best match, the rest of the list is often filler picked by energy.
-- **Energy dominates:** energy is worth up to 4 points, but a perfect genre and mood match is worth only 1.75. Once your genre's songs are more than about 0.25 away from your energy target, an unrelated genre wins.
-- **Mood is tied to energy in the data:** every sad or chill song is quiet, and every intense or angry song is loud. Listeners with mixed tastes, like energetic sad music, can't be served.
-- **Uneven exposure:** quiet songs in the crowded energy range get shown about twice as often as loud songs at the edges.
-- **Fragile matching:** matching is case-sensitive, there's no partial credit for related genres, and inputs aren't validated.
-- **No real understanding of music:** it doesn't know about lyrics, language, artists, or what the listener has played before.
+**How it's tested:** 52 `pytest` unit tests (with a fake Gemini, so no API calls), and `eval/run_eval.py`, which runs 52 predefined inputs through the whole system and reports pass/fail for each case.
 
-More detail is in the [model card](model_card.md).
+**Offline results** (`python -m eval.run_eval --offline`): **45/52 cases passed (87%).**
+
+| Check | Pass rate |
+| --- | --- |
+| Grounded (only retrieved songs) | 100% |
+| Safety (crisis messages get the 988 reply) | 100% (3/3) |
+| Robust (empty, emoji or gibberish input still gets a reply) | 100% |
+| Named genre honored | 100% (3/3) |
+| Mood read correctly | 87% (26/30) |
+| Relevant picks (energy and positivity fit the mood) | 80% (12/15) |
+
+### What worked
+
+- **Grounding:** in every test and every sample so far, all recommended songs were real and came from the retrieved set.
+- **Confidence scores:** the keyword model was 100% accurate when confident and 50% when unsure, so the 60% handoff to Gemini sits in the right place.
+- **Fallbacks:** when there was no key, an invalid key, or a rejected reply, the user still got sensible songs.
+
+### What didn't
+
+- **The first trained model:** it was the 2,000-row `--quick` smoke test, and it read every message as "neutral", so "I'm in a sad mood" got calm lofi songs. That exposed a fallback gap, now fixed: a weak guess plus a failed Gemini call now falls back to the keyword model.
+- **Keyword gaps:** all 7 offline failures are messages with no matching keywords, like "birthday", "nailed that interview" and "hype me up". With Gemini, these go to the LLM instead.
+- **Bugs the tests caught:**
+  - The only "chill" song happens to be dancehall, which made every chill request lean latin. Now a mood needs at least 2 songs sharing a genre family before it gets a default genre.
+  - Titles like "Perfect" were flagged in ordinary sentences such as "a perfect song for tonight".
+- **Full fine-tuning on a laptop CPU:** too slow to finish (about 5 hours).
+
+### What I learned
+
+- **Writing tests and inputs together is risky.** The keyword list and the test messages were written in the same session, so the 87% mood accuracy is probably optimistic. A fair number needs new messages written without looking at the keyword list.
+- **Some numbers favor their own setup.** The weight comparison partly rewards the mood weight by design, because the test profiles already contain the expected mood. That's why energy and valence errors are reported next to it.
+- **Measuring beats guessing.** Several fixes only happened because a test showed the problem.
+
+Full numbers, the weight comparison and the bias analysis are in [model_card.md § 8](model_card.md#8-evaluation).
 
 ---
 
 ## Reflection
 
-Read and complete `model_card.md`:
-
-[**Model Card**](model_card.md)
-
 Building this showed me that a recommender is just a set of choices about what counts. The "prediction" is only adding up points, so the weights *are* the system's opinion about what matters. Changing one number reshuffled the lists. But it didn't change the top pick, because that was decided by which songs existed in the catalog. A list can look confident and come with clear reasons, yet still be filler when there's nothing good to recommend.
 
-Bias showed up in places I didn't expect. Nobody wrote "prefer quiet songs," but quiet songs were shown about twice as often, because more of them are bunched together at similar energy levels. The data also tied mood to energy, so a listener who wanted something outside those patterns was quietly ignored. In a real app with millions of songs, the same effects could decide which artists get heard. They could also push users into a filter bubble without anyone choosing that on purpose.
+Bias showed up in places I didn't expect. Nobody wrote "prefer quiet songs," but in v1 quiet songs were shown about twice as often, because more of them were bunched together at similar energy levels. The data also tied mood to energy, so a listener who wanted something outside those patterns was quietly ignored. In a real app with millions of songs, the same effects could decide which artists get heard. They could also push users into a filter bubble without anyone choosing that on purpose.
+
+*TODO: add a sentence or two on what adding an LLM taught you about AI and problem-solving, e.g. why grounding and fallbacks mattered more than the model itself.*
+
+The graded responsible-AI reflection is in [model_card.md](model_card.md): how I collaborated with AI, a suggestion I accepted and one I rejected or revised, and the system's limitations.

@@ -42,7 +42,7 @@ flowchart LR
     CL1 --> SC
     SC -->|top-k songs + reasons| CL2
     GUARD --> R([Reply: genre + 2–3 songs<br/>+ why each fits])
-    SC -.->|API down: plain ranked list| R
+    SC -.->|API down: fallback paragraph from ranked list| R
 ```
 
 ---
@@ -113,7 +113,7 @@ flowchart TB
 
         E2 --> RUN
     E3 --> RUN
-    RUN["eval/mood_eval.py<br/>eval/chatbot_eval.py"] --> REP[["Report table<br/>→ README + model_card.md"]]
+    RUN["eval/run_eval.py<br/>(+ mood_eval.py, chatbot_eval.py)"] --> REP[["Report table<br/>→ README + model_card.md"]]
 ```
 
 Layers 2 and 3 call the LLM API (Gemini) and cost money per run. Run them when
