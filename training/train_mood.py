@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "models" / "mood_classifier"
+QUICK_DIR = ROOT / "models" / "mood_classifier_quick"
 CUSTOM_CSV = ROOT / "training" / "custom_examples.csv"
 BASE_MODEL = "distilbert-base-uncased"
 
@@ -98,9 +99,14 @@ def main() -> None:
     trainer.train()
 
     print("Held-out GoEmotions test set:", trainer.evaluate(test))
-    trainer.save_model(str(OUT_DIR))
-    tokenizer.save_pretrained(str(OUT_DIR))
-    print(f"Saved fine-tuned model to {OUT_DIR}")
+    # A --quick run is only a smoke test (~40% accuracy, mostly "neutral"), so it
+    # saves elsewhere and never replaces the model the chatbot loads.
+    out_dir = QUICK_DIR if args.quick else OUT_DIR
+    trainer.save_model(str(out_dir))
+    tokenizer.save_pretrained(str(out_dir))
+    print(f"Saved fine-tuned model to {out_dir}")
+    if args.quick:
+        print("Quick run: the chatbot will NOT use this model. Run without --quick for the real one.")
 
 
 def _load_custom(label2id):

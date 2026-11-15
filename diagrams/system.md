@@ -4,6 +4,8 @@ TunedIn is a mood-aware music chatbot. It reads how a user feels, retrieves
 matching songs from `data/songs.csv`, and writes a recommendation grounded only
 in those retrieved songs (Retrieval-Augmented Generation).
 
+**LLM:** Gemini by default (`src/llm.py`); Claude is a drop-in alternative via `LLM_PROVIDER`.
+
 **Legend:** everything below is built. The fine-tuned classifier needs one training run
 (`python training/train_mood.py`); until then the keyword baseline fills that slot.
 
@@ -18,7 +20,7 @@ flowchart LR
     subgraph UNDERSTAND["1 · Understand mood"]
         FT["Fine-tuned emotion classifier<br/>DistilBERT on GoEmotions<br/>(keyword baseline until trained)"]
         MAP["Emotion → profile map<br/>mood, target_energy,<br/>target_valence, likes_acoustic"]
-        CL1["Claude fallback<br/>structured JSON profile"]
+        CL1["LLM fallback<br/>structured JSON profile"]
         FT -->|confidence ≥ threshold| MAP
         FT -.->|low confidence / error| CL1
     end
@@ -30,7 +32,7 @@ flowchart LR
     end
 
     subgraph GENERATE["3 · Generate"]
-        CL2["Claude reply<br/>uses ONLY retrieved songs"]
+        CL2["LLM reply<br/>uses ONLY retrieved songs"]
         GUARD["Grounding check<br/>titles must exist in retrieved set"]
         CL2 --> GUARD
     end
@@ -54,7 +56,7 @@ sequenceDiagram
     participant Bot as chatbot.py
     participant Mood as mood_model.py
     participant Rec as recommender.py
-    participant Claude as Claude API
+    participant LLM as LLM API (Gemini)
 
     User->>UI: "just got the job!!!"
     UI->>Bot: answer(message)
@@ -62,13 +64,13 @@ sequenceDiagram
     alt confident prediction
         Mood-->>Bot: profile {euphoric, energy 0.9, valence 0.85}
     else low confidence
-        Bot->>Claude: extract profile (JSON schema, mood enum)
-        Claude-->>Bot: profile
+        Bot->>LLM: extract profile (JSON schema, mood enum)
+        LLM-->>Bot: profile
     end
     Bot->>Rec: recommend_songs(profile, songs, k=5)
     Rec-->>Bot: top 5 (song, score, reasons)
-    Bot->>Claude: system rules + <retrieved_songs> + message
-    Claude-->>Bot: recommendation text
+    Bot->>LLM: system rules + <retrieved_songs> + message
+    LLM-->>Bot: recommendation text
     Bot->>Bot: verify every title is in retrieved set
     Bot-->>UI: reply
     UI-->>User: genre + songs + why
@@ -99,7 +101,7 @@ flowchart TB
 
     subgraph L2["Layer 2 · Mood-reading eval"]
         C2[("eval/mood_cases.csv<br/>message → expected mood + ranges")]
-        E2["Compare: keyword baseline<br/>vs fine-tuned model vs Claude<br/>accuracy · energy/valence MAE · in-range %"]
+        E2["Compare: keyword baseline<br/>vs fine-tuned model vs LLM<br/>accuracy · energy/valence MAE · in-range %"]
         C2 --> E2
     end
 
@@ -114,7 +116,7 @@ flowchart TB
     RUN["eval/mood_eval.py<br/>eval/chatbot_eval.py"] --> REP[["Report table<br/>→ README + model_card.md"]]
 ```
 
-Layers 2 and 3 call the Claude API and cost money per run. Run them when
+Layers 2 and 3 call the LLM API (Gemini) and cost money per run. Run them when
 prompts, the model, or the catalog change. Layer 1 never calls the API.
 
 ---

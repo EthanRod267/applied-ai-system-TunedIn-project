@@ -7,13 +7,12 @@ TunedIn chatbot: understand mood -> retrieve songs -> generate a grounded reply.
 
 Reliability rules:
 - Crisis messages get a support response before anything else (no API call).
-- If the mood model isn't confident, Claude reads the mood; if Claude fails, the
-  mood model's guess is used anyway.
-- Claude can only pick songs from the retrieved set (song_id is an enum in the
-  output schema). If Claude fails, the bot returns the ranked list on its own.
+- If the mood model isn't confident, the LLM (Gemini or Claude, see src/llm.py)
+  reads the mood; if that fails, the local models' best guess is used.
+- The LLM can only pick songs from the retrieved set (song_id is an enum in the
+  output schema). If the LLM fails, the bot returns the ranked list on its own.
 """
 
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,17 +21,14 @@ from typing import Dict, List, Optional
 
 try:
     from src.recommender import load_songs, recommend_songs
-    from src.mood_model import EMOTIONS, MoodPrediction, load_mood_model, profile_for_emotion
+    from src.mood_model import EMOTIONS, KeywordMoodModel, MoodPrediction, load_mood_model, profile_for_emotion
+    from src.llm import make_llm
 except ModuleNotFoundError:
     from recommender import load_songs, recommend_songs
-    from mood_model import EMOTIONS, MoodPrediction, load_mood_model, profile_for_emotion
+    from mood_model import EMOTIONS, KeywordMoodModel, MoodPrediction, load_mood_model, profile_for_emotion
+    from llm import make_llm
 
-MODEL = "claude-opus-5-5"
 SONGS_CSV = Path(__file__).resolve().parent.parent / "data" / "songs.csv"
-
-# Opt into server-side fallback: if a request is declined, the API retries it
-# on Anthropic's recommended fallback model inside the same call.
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 CRISIS_PATTERNS = [
     r"kill myself", r"suicid", r"end(ing)? it all", r"want to die", r"wanna die",
@@ -77,10 +73,10 @@ class BotReply:
     text: str
     picks: List[Dict] = field(default_factory=list)       # song dicts + "why"
     emotion: Optional[str] = None
-    mood_source: Optional[str] = None                     # keyword / fine-tuned / claude
+    mood_source: Optional[str] = None                     # keyword / fine-tuned / gemini / claude
     profile: Optional[Dict] = None
     retrieved_ids: List[int] = field(default_factory=list)
-    reply_source: str = "none"                            # claude / fallback / crisis / empty
+    reply_source: str = "none"                            # gemini / claude / fallback / crisis / empty
     grounded: bool = True                                 # every pick was in the retrieved set
     errors: List[str] = field(default_factory=list)
     latency_s: float = 0.0
@@ -91,8 +87,8 @@ class TunedInBot:
         self,
         songs: Optional[List[Dict]] = None,
         mood_model=None,
-        client=None,
-        use_claude: bool = True,
+        llm=None,
+        use_llm: bool = True,
         confidence_threshold: float = 0.6,
         k: int = 5,
     ):
@@ -101,26 +97,37 @@ class TunedInBot:
         self.moods = sorted({s["mood"] for s in self.songs})
         self.genres = sorted({s["genre"] for s in self.songs})
         self.mood_model = mood_model or load_mood_model()
+        self.backup_model = KeywordMoodModel()
         self.confidence_threshold = confidence_threshold
         self.k = k
-        self.client = client
-        if use_claude and client is None:
-            self.client = _make_client()
+        self.llm = llm
+        if use_llm and llm is None:
+            self.llm = make_llm()
 
     # -- 1. Understand ------------------------------------------------------
 
     def understand(self, message: str, errors: List[str]) -> MoodPrediction:
         guess = self.mood_model.predict(message)
+        if guess.confidence >= self.confidence_threshold:
+            return self._with_genre(guess, message)
+        if self.llm is not None:
+            try:
+                return self._llm_understand(message)
+            except Exception as exc:  # any API/parse failure -> fall through to local models
+                errors.append(f"understand: {type(exc).__name__}: {exc}")
+        # Primary model is unsure and the LLM is unavailable: if the keyword
+        # baseline found any mood words, trust it over a low-confidence guess.
+        if guess.source != self.backup_model.name:
+            backup = self.backup_model.predict(message)
+            if backup.confidence > 0:
+                guess = backup
+        return self._with_genre(guess, message)
+
+    def _with_genre(self, guess: MoodPrediction, message: str) -> MoodPrediction:
         named = self.named_genre(message)
         if named:
             guess.profile["favorite_genre"] = named
-        if guess.confidence >= self.confidence_threshold or self.client is None:
-            return guess
-        try:
-            return self._claude_understand(message)
-        except Exception as exc:  # any API/parse failure -> keep the local guess
-            errors.append(f"understand: {type(exc).__name__}: {exc}")
-            return guess
+        return guess
 
     def named_genre(self, message: str) -> str:
         """Returns a catalog genre the user names ("some blues"), longest match first, else ""."""
@@ -130,7 +137,7 @@ class TunedInBot:
                 return genre
         return ""
 
-    def _claude_understand(self, message: str) -> MoodPrediction:
+    def _llm_understand(self, message: str) -> MoodPrediction:
         schema = {
             "type": "object",
             "properties": {
@@ -144,7 +151,7 @@ class TunedInBot:
                          "likes_acoustic", "favorite_genre"],
             "additionalProperties": False,
         }
-        data = self._call_claude(UNDERSTAND_SYSTEM, message, schema, max_tokens=1024)
+        data = self.llm.generate_json(UNDERSTAND_SYSTEM, message, schema, max_tokens=2048)
         profile = profile_for_emotion(data["emotion"])
         profile.update(
             target_energy=_clamp(data["target_energy"]),
@@ -152,7 +159,7 @@ class TunedInBot:
             likes_acoustic=bool(data["likes_acoustic"]),
             favorite_genre=data["favorite_genre"],
         )
-        return MoodPrediction(data["emotion"], 1.0, profile, "claude")
+        return MoodPrediction(data["emotion"], 1.0, profile, self.llm.name)
 
     # -- 2. Retrieve --------------------------------------------------------
 
@@ -161,8 +168,9 @@ class TunedInBot:
 
     # -- 3. Generate --------------------------------------------------------
 
-    def _claude_generate(self, message: str, hits) -> Dict:
-        ids = [song["id"] for song, _, _ in hits]
+    def _llm_generate(self, message: str, hits) -> Dict:
+        # IDs go out as strings: string enums work the same on every provider.
+        ids = [str(song["id"]) for song, _, _ in hits]
         schema = {
             "type": "object",
             "properties": {
@@ -173,7 +181,7 @@ class TunedInBot:
                     "items": {
                         "type": "object",
                         "properties": {
-                            "song_id": {"type": "integer", "enum": ids},
+                            "song_id": {"type": "string", "enum": ids},
                             "why": {"type": "string"},
                         },
                         "required": ["song_id", "why"],
@@ -190,7 +198,10 @@ class TunedInBot:
             for s, _, _ in hits
         )
         prompt = f"<retrieved_songs>\n{context}\n</retrieved_songs>\n\n<user_message>\n{message}\n</user_message>"
-        return self._call_claude(GENERATE_SYSTEM, prompt, schema, max_tokens=2048)
+        data = self.llm.generate_json(GENERATE_SYSTEM, prompt, schema, max_tokens=4096)
+        for p in data["picks"]:
+            p["song_id"] = int(p["song_id"])
+        return data
 
     # -- Pipeline -----------------------------------------------------------
 
@@ -218,16 +229,16 @@ class TunedInBot:
             errors=errors,
         )
 
-        if self.client is not None:
+        if self.llm is not None:
             try:
-                data = self._claude_generate(message, hits)
+                data = self._llm_generate(message, hits)
                 picks = _dedupe_picks(data["picks"])[:3]
                 reply.grounded = all(p["song_id"] in reply.retrieved_ids for p in picks)
                 picks = [p for p in picks if p["song_id"] in reply.retrieved_ids]
                 if picks:
                     reply.picks = [{**self.by_id[p["song_id"]], "why": p["why"]} for p in picks]
                     reply.text = _render(data["intro"], data["genre"], reply.picks)
-                    reply.reply_source = "claude"
+                    reply.reply_source = self.llm.name
                     return reply
                 errors.append("generate: no valid picks returned")
             except Exception as exc:  # any API/parse failure -> plain ranked list
@@ -244,35 +255,6 @@ class TunedInBot:
         )
         reply.reply_source = "fallback"
         return reply
-
-    # -- Claude helper --------------------------------------------------------
-
-    def _call_claude(self, system: str, user: str, schema: Dict, max_tokens: int) -> Dict:
-        response = self.client.beta.messages.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            betas=[FALLBACK_BETA],
-            fallbacks="default",
-            system=system,
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-            messages=[{"role": "user", "content": user}],
-        )
-        if response.stop_reason == "refusal":
-            raise RuntimeError("request was declined (stop_reason=refusal)")
-        if response.stop_reason == "max_tokens":
-            raise RuntimeError("response hit max_tokens before finishing")
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
-
-
-def _make_client():
-    """Returns an Anthropic client, or None if the SDK isn't installed."""
-    try:
-        import anthropic
-    except ImportError:
-        print("anthropic isn't installed; running without Claude (pip install -r requirements.txt).")
-        return None
-    return anthropic.Anthropic()
 
 
 def _clamp(x: float) -> float:

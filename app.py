@@ -4,6 +4,8 @@ TunedIn chat UI.
     streamlit run app.py
 """
 
+import os
+
 import streamlit as st
 
 from src.chatbot import TunedInBot
@@ -13,12 +15,38 @@ st.title("🎵 TunedIn")
 st.caption("Tell me how you're feeling and I'll find songs that fit.")
 
 
+SECRET_NAMES = ("LLM_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL")
+
+
+def load_secrets():
+    """Copies settings from .streamlit/secrets.toml into the environment (env vars win). Empty values are skipped."""
+    for name in SECRET_NAMES:
+        if os.environ.get(name):
+            continue
+        try:
+            value = st.secrets.get(name)
+        except Exception:  # no secrets.toml at all
+            return
+        if value:
+            os.environ[name] = str(value).strip()
+
+
 @st.cache_resource
 def get_bot():
     return TunedInBot()
 
 
+load_secrets()
 bot = get_bot()
+
+if bot.llm is None:
+    st.warning(
+        "No LLM API key found, so replies are the plain ranked list. Add "
+        "`GEMINI_API_KEY = \"...\"` to `.streamlit/secrets.toml` "
+        "(or set the environment variable before `streamlit run`), then restart."
+    )
+st.sidebar.caption(f"Mood model: **{bot.mood_model.name}**")
+st.sidebar.caption(f"LLM: **{bot.llm.name + ' / ' + bot.llm.model if bot.llm else 'offline'}**")
 
 if "history" not in st.session_state:
     st.session_state.history = []

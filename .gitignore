@@ -17,3 +17,7 @@ venv/
 # Fine-tuned model weights and training checkpoints (large; rebuild with training/train_mood.py)
 models/
 training/checkpoints/
+
+# Local secrets (API keys)
+.streamlit/secrets.toml
+.env

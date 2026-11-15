@@ -2,7 +2,7 @@
 Layer 2: how well does each model read the user's mood?
 
     python -m eval.mood_eval                 # keyword baseline + fine-tuned (if trained)
-    python -m eval.mood_eval --with-claude   # also Claude (calls the API, costs a little)
+    python -m eval.mood_eval --with-llm      # also the LLM: Gemini or Claude (calls the API)
 
 For each case in eval/mood_cases.csv it checks:
 - mood accuracy: predicted catalog mood == expected_mood
@@ -22,18 +22,17 @@ from src.mood_model import DEFAULT_MODEL_DIR, KeywordMoodModel
 CASES = Path(__file__).resolve().parent / "mood_cases.csv"
 
 
-class ClaudeMoodModel:
-    """Wraps the chatbot's Claude mood reader so it fits the predict() interface."""
-
-    name = "claude"
+class LLMMoodModel:
+    """Wraps the chatbot's LLM mood reader so it fits the predict() interface."""
 
     def __init__(self):
         self.bot = TunedInBot(mood_model=KeywordMoodModel())
-        if self.bot.client is None:
-            raise RuntimeError("Claude client unavailable (pip install anthropic, set ANTHROPIC_API_KEY)")
+        if self.bot.llm is None:
+            raise RuntimeError("No LLM available: set GEMINI_API_KEY (or ANTHROPIC_API_KEY)")
+        self.name = self.bot.llm.name
 
     def predict(self, message):
-        return self.bot._claude_understand(message)
+        return self.bot._llm_understand(message)
 
 
 def load_cases():
@@ -95,7 +94,7 @@ def print_table(dicts):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--with-claude", action="store_true", help="also evaluate Claude (uses the API)")
+    parser.add_argument("--with-llm", action="store_true", help="also evaluate the LLM (uses the API)")
     parser.add_argument("--show-misses", action="store_true", help="list every wrong mood prediction")
     args = parser.parse_args()
 
@@ -106,8 +105,8 @@ def main():
         models.append(FineTunedMoodModel())
     else:
         print("(no fine-tuned model yet; run training/train_mood.py to add it to this table)\n")
-    if args.with_claude:
-        models.append(ClaudeMoodModel())
+    if args.with_llm:
+        models.append(LLMMoodModel())
 
     summaries = []
     for model in models:

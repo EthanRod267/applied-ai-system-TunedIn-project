@@ -2,7 +2,7 @@
 Layer 3: end-to-end reliability of the chatbot.
 
     python -m eval.chatbot_eval --offline    # no API: mood model + ranked-list fallback (free)
-    python -m eval.chatbot_eval              # full pipeline with Claude (costs a little)
+    python -m eval.chatbot_eval              # full pipeline with the LLM (Gemini or Claude)
     python -m eval.chatbot_eval --runs 3     # repeat each case to measure consistency
 
 Checks per case (eval/chatbot_cases.csv):
@@ -74,14 +74,14 @@ def jaccard(sets):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--offline", action="store_true", help="don't call Claude")
+    parser.add_argument("--offline", action="store_true", help="don't call the LLM")
     parser.add_argument("--runs", type=int, default=1, help="runs per case (>1 measures consistency)")
     args = parser.parse_args()
 
-    bot = TunedInBot(use_claude=not args.offline)
+    bot = TunedInBot(use_llm=not args.offline)
     cases = load_cases()
     print(f"Running {len(cases)} cases x {args.runs} run(s) | mood model: {bot.mood_model.name} | "
-          f"Claude: {'off' if bot.client is None else 'on'}\n")
+          f"LLM: {'off' if bot.llm is None else bot.llm.name}\n")
 
     totals, failures, latencies, consistency = {}, [], [], []
     sources, error_count = {}, 0
