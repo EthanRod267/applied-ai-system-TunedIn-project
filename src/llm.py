@@ -1,16 +1,11 @@
 """
-LLM providers for the chatbot. Each one has the same single method:
+Gemini LLM for the chatbot. One method:
 
     generate_json(system, user, schema, max_tokens) -> dict
 
-so the pipeline in chatbot.py doesn't care which provider is behind it.
-
-Choosing a provider (make_llm):
-- LLM_PROVIDER=gemini or LLM_PROVIDER=claude forces one.
-- Otherwise: Gemini if GEMINI_API_KEY (or GOOGLE_API_KEY) is set, else Claude if
-  ANTHROPIC_API_KEY is set, else None (the bot runs offline).
-
-Model overrides: GEMINI_MODEL (default below), CLAUDE_MODEL.
+Setup: set GEMINI_API_KEY (or GOOGLE_API_KEY). Optional: GEMINI_MODEL to
+override the default model below. With no key, make_llm() returns None and the
+chatbot runs offline (local mood model + ranked-list reply).
 """
 
 import json
@@ -18,11 +13,10 @@ import os
 from typing import Dict, Optional
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 
 
 class LLMError(RuntimeError):
-    """The provider answered, but not with usable JSON (blocked, truncated, empty)."""
+    """Gemini answered, but not with usable JSON (blocked, truncated, empty)."""
 
 
 class GeminiLLM:
@@ -57,66 +51,19 @@ class GeminiLLM:
         return json.loads(response.text)
 
 
-class ClaudeLLM:
-    name = "claude"
-
-    # Server-side fallback: a declined request is retried on Anthropic's
-    # recommended fallback model inside the same call.
-    FALLBACK_BETA = "server-side-fallback-2026-07-01"
-
-    def __init__(self, model: Optional[str] = None):
-        import anthropic  # pip install anthropic
-
-        self.model = model or os.environ.get("CLAUDE_MODEL", DEFAULT_CLAUDE_MODEL)
-        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
-
-    def generate_json(self, system: str, user: str, schema: Dict, max_tokens: int) -> Dict:
-        response = self.client.beta.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            betas=[self.FALLBACK_BETA],
-            fallbacks="default",
-            system=system,
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-            messages=[{"role": "user", "content": user}],
-        )
-        if response.stop_reason == "refusal":
-            raise LLMError("request was declined (stop_reason=refusal)")
-        if response.stop_reason == "max_tokens":
-            raise LLMError("response hit max_tokens before finishing")
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
+def has_gemini_key() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
 
 
-PROVIDERS = {"gemini": GeminiLLM, "claude": ClaudeLLM}
-
-
-def detect_provider() -> Optional[str]:
-    """Returns the provider name to use from the environment, or None if no key is set."""
-    forced = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if forced:
-        return forced
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "claude"
-    return None
-
-
-def make_llm(provider: Optional[str] = None):
-    """Builds the chosen provider, or returns None (with a printed reason) so the bot runs offline."""
-    provider = provider or detect_provider()
-    if provider is None:
-        print("No LLM API key found (GEMINI_API_KEY or ANTHROPIC_API_KEY); running offline.")
-        return None
-    if provider not in PROVIDERS:
-        print(f"Unknown LLM_PROVIDER {provider!r}; expected one of {sorted(PROVIDERS)}. Running offline.")
+def make_llm():
+    """Returns a GeminiLLM, or None (with a printed reason) so the bot runs offline."""
+    if not has_gemini_key():
+        print("No GEMINI_API_KEY found; running offline.")
         return None
     try:
-        return PROVIDERS[provider]()
+        return GeminiLLM()
     except ImportError:
-        package = "google-genai" if provider == "gemini" else "anthropic"
-        print(f"{package} isn't installed (pip install -r requirements.txt); running offline.")
-    except Exception as exc:  # e.g. the SDK rejects a missing key at construction
-        print(f"Couldn't start {provider}: {type(exc).__name__}: {exc}. Running offline.")
+        print("google-genai isn't installed (pip install -r requirements.txt); running offline.")
+    except Exception as exc:  # e.g. the SDK rejects the key format at construction
+        print(f"Couldn't start Gemini: {type(exc).__name__}: {exc}. Running offline.")
     return None

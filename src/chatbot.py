@@ -7,10 +7,12 @@ TunedIn chatbot: understand mood -> retrieve songs -> generate a grounded reply.
 
 Reliability rules:
 - Crisis messages get a support response before anything else (no API call).
-- If the mood model isn't confident, the LLM (Gemini or Claude, see src/llm.py)
-  reads the mood; if that fails, the local models' best guess is used.
-- The LLM can only pick songs from the retrieved set (song_id is an enum in the
-  output schema). If the LLM fails, the bot returns the ranked list on its own.
+- If the mood model isn't confident, Gemini (src/llm.py) reads the mood; if that
+  fails, the local models' best guess is used.
+- Gemini writes a short paragraph but can only pick songs from the retrieved set
+  (song_ids is an enum in the output schema), and every catalog title the
+  paragraph mentions must be one of its picks. If Gemini fails, the bot writes
+  the paragraph itself from the ranked list.
 """
 
 import re
@@ -21,11 +23,15 @@ from typing import Dict, List, Optional
 
 try:
     from src.recommender import load_songs, recommend_songs
-    from src.mood_model import EMOTIONS, KeywordMoodModel, MoodPrediction, load_mood_model, profile_for_emotion
+    from src.catalog import contains_phrase, find_named_genre
+    from src.mood_model import (EMOTIONS, KeywordMoodModel, MoodPrediction,
+                                load_mood_model, profile_for_emotion)
     from src.llm import make_llm
 except ModuleNotFoundError:
     from recommender import load_songs, recommend_songs
-    from mood_model import EMOTIONS, KeywordMoodModel, MoodPrediction, load_mood_model, profile_for_emotion
+    from catalog import contains_phrase, find_named_genre
+    from mood_model import (EMOTIONS, KeywordMoodModel, MoodPrediction,
+                            load_mood_model, profile_for_emotion)
     from llm import make_llm
 
 SONGS_CSV = Path(__file__).resolve().parent.parent / "data" / "songs.csv"
@@ -55,11 +61,13 @@ UNDERSTAND_SYSTEM = (
 )
 
 GENERATE_SYSTEM = (
-    "You are TunedIn, a warm, concise music companion. Recommend songs ONLY from "
-    "<retrieved_songs>, using their song_id. Pick 2 or 3 songs that best fit the user's "
-    "mood, name the main genre you're recommending, and give one short sentence per song "
-    "on why it fits how they feel. Write intro as one or two friendly sentences that "
-    "acknowledge their mood. Never mention songs that are not in the list."
+    "You are TunedIn, a warm, concise music companion. Choose the genre and 2 or 3 songs "
+    "from <retrieved_songs> that best fit the user's mood. Then write ONE short paragraph "
+    "(3-4 sentences, plain prose: no lists, headings, or markdown) that acknowledges how "
+    "they feel and explains why that genre and each song fits, using the songs' mood, "
+    "energy, and positivity (valence). Mention each chosen song by its exact title and "
+    "artist. Put the chosen songs' song_id values in song_ids, in the order you mention "
+    "them. Never mention any song that is not in <retrieved_songs>."
 )
 
 
@@ -71,12 +79,12 @@ def is_crisis(message: str) -> bool:
 @dataclass
 class BotReply:
     text: str
-    picks: List[Dict] = field(default_factory=list)       # song dicts + "why"
+    picks: List[Dict] = field(default_factory=list)       # recommended song dicts, in the order the reply mentions them
     emotion: Optional[str] = None
-    mood_source: Optional[str] = None                     # keyword / fine-tuned / gemini / claude
+    mood_source: Optional[str] = None                     # keyword / fine-tuned / gemini
     profile: Optional[Dict] = None
     retrieved_ids: List[int] = field(default_factory=list)
-    reply_source: str = "none"                            # gemini / claude / fallback / crisis / empty
+    reply_source: str = "none"                            # gemini / fallback / crisis / empty
     grounded: bool = True                                 # every pick was in the retrieved set
     errors: List[str] = field(default_factory=list)
     latency_s: float = 0.0
@@ -94,10 +102,11 @@ class TunedInBot:
     ):
         self.songs = songs if songs is not None else load_songs(str(SONGS_CSV))
         self.by_id = {s["id"]: s for s in self.songs}
-        self.moods = sorted({s["mood"] for s in self.songs})
-        self.genres = sorted({s["genre"] for s in self.songs})
-        self.mood_model = mood_model or load_mood_model()
-        self.backup_model = KeywordMoodModel()
+        self.moods = sorted({s["mood_family"] for s in self.songs})
+        self.genres = sorted({s["genre"].lower() for s in self.songs})          # subgenres
+        self.genre_families = sorted({s["genre_family"] for s in self.songs})   # pop, rock, ...
+        self.mood_model = mood_model or load_mood_model(songs=self.songs)
+        self.backup_model = KeywordMoodModel(self.songs)
         self.confidence_threshold = confidence_threshold
         self.k = k
         self.llm = llm
@@ -130,12 +139,8 @@ class TunedInBot:
         return guess
 
     def named_genre(self, message: str) -> str:
-        """Returns a catalog genre the user names ("some blues"), longest match first, else ""."""
-        text = message.lower()
-        for genre in sorted(self.genres, key=len, reverse=True):  # "indie pop" before "pop"
-            if re.search(rf"(?<!\w){re.escape(genre)}(?!\w)", text):
-                return genre
-        return ""
+        """Returns a catalog genre the user names ("some blues"), else ""."""
+        return find_named_genre(message, self.genres)
 
     def _llm_understand(self, message: str) -> MoodPrediction:
         schema = {
@@ -145,7 +150,7 @@ class TunedInBot:
                 "target_energy": {"type": "number"},
                 "target_valence": {"type": "number"},
                 "likes_acoustic": {"type": "boolean"},
-                "favorite_genre": {"type": "string", "enum": self.genres + [""]},
+                "favorite_genre": {"type": "string", "enum": self.genre_families + [""]},
             },
             "required": ["emotion", "target_energy", "target_valence",
                          "likes_acoustic", "favorite_genre"],
@@ -169,27 +174,16 @@ class TunedInBot:
     # -- 3. Generate --------------------------------------------------------
 
     def _llm_generate(self, message: str, hits) -> Dict:
-        # IDs go out as strings: string enums work the same on every provider.
+        # IDs go out as strings: string enums are the most portable schema form.
         ids = [str(song["id"]) for song, _, _ in hits]
         schema = {
             "type": "object",
             "properties": {
-                "intro": {"type": "string"},
                 "genre": {"type": "string", "enum": sorted({s["genre"] for s, _, _ in hits})},
-                "picks": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "song_id": {"type": "string", "enum": ids},
-                            "why": {"type": "string"},
-                        },
-                        "required": ["song_id", "why"],
-                        "additionalProperties": False,
-                    },
-                },
+                "song_ids": {"type": "array", "items": {"type": "string", "enum": ids}},
+                "paragraph": {"type": "string"},
             },
-            "required": ["intro", "genre", "picks"],
+            "required": ["genre", "song_ids", "paragraph"],
             "additionalProperties": False,
         }
         context = "\n".join(
@@ -199,9 +193,17 @@ class TunedInBot:
         )
         prompt = f"<retrieved_songs>\n{context}\n</retrieved_songs>\n\n<user_message>\n{message}\n</user_message>"
         data = self.llm.generate_json(GENERATE_SYSTEM, prompt, schema, max_tokens=4096)
-        for p in data["picks"]:
-            p["song_id"] = int(p["song_id"])
+        data["song_ids"] = list(dict.fromkeys(int(i) for i in data["song_ids"]))  # dedupe, keep order
         return data
+
+    def mentioned_titles(self, text: str) -> List[int]:
+        """
+        IDs of catalog songs the text refers to by title. Whole-word, case- and
+        accent-insensitive ("Senorita" finds "Señorita"). Many titles are common
+        words ("Perfect", "Stay", "Closer"), so a one-word title only counts
+        when it's in quotes or its artist is also named.
+        """
+        return [s["id"] for s in self.songs if _mentions_song(text, s)]
 
     # -- Pipeline -----------------------------------------------------------
 
@@ -232,27 +234,24 @@ class TunedInBot:
         if self.llm is not None:
             try:
                 data = self._llm_generate(message, hits)
-                picks = _dedupe_picks(data["picks"])[:3]
-                reply.grounded = all(p["song_id"] in reply.retrieved_ids for p in picks)
-                picks = [p for p in picks if p["song_id"] in reply.retrieved_ids]
-                if picks:
-                    reply.picks = [{**self.by_id[p["song_id"]], "why": p["why"]} for p in picks]
-                    reply.text = _render(data["intro"], data["genre"], reply.picks)
+                pick_ids = data["song_ids"][:3]
+                mentioned = self.mentioned_titles(data["paragraph"])
+                reply.grounded = (
+                    all(i in reply.retrieved_ids for i in pick_ids)
+                    and all(i in pick_ids for i in mentioned)
+                )
+                if reply.grounded and pick_ids and data["paragraph"].strip():
+                    reply.picks = [dict(self.by_id[i]) for i in pick_ids]
+                    reply.text = data["paragraph"].strip()
                     reply.reply_source = self.llm.name
                     return reply
-                errors.append("generate: no valid picks returned")
-            except Exception as exc:  # any API/parse failure -> plain ranked list
+                errors.append("generate: reply named songs outside the retrieved set"
+                              if not reply.grounded else "generate: empty reply")
+            except Exception as exc:  # any API/parse failure -> template paragraph
                 errors.append(f"generate: {type(exc).__name__}: {exc}")
 
-        reply.picks = [
-            {**s, "why": f"{s['mood']} feel, energy {s['energy']:.2f}, positivity {s['valence']:.2f}"}
-            for s, _, _ in hits[:3]
-        ]
-        reply.text = _render(
-            f"Here's what fits a {prediction.profile['favorite_mood']} mood right now.",
-            reply.picks[0]["genre"],
-            reply.picks,
-        )
+        reply.picks = [dict(s) for s, _, _ in hits[:3]]
+        reply.text = _fallback_paragraph(prediction.profile, reply.picks)
         reply.reply_source = "fallback"
         return reply
 
@@ -261,20 +260,40 @@ def _clamp(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def _dedupe_picks(picks: List[Dict]) -> List[Dict]:
-    seen, out = set(), []
-    for p in picks:
-        if p["song_id"] not in seen:
-            seen.add(p["song_id"])
-            out.append(p)
-    return out
+def _primary_artist(artist: str) -> str:
+    """ "Post Malone & Swae Lee" -> "Post Malone"; "Macklemore & Ryan Lewis ft. X" -> "Macklemore". """
+    return re.split(r"\s*(?:&|,| ft\.? | feat\.? | featuring | x | with )\s*", artist, maxsplit=1, flags=re.I)[0]
 
 
-def _render(intro: str, genre: str, picks: List[Dict]) -> str:
-    lines = [intro, "", f"Genre to try: {genre}", ""]
-    for i, p in enumerate(picks, start=1):
-        lines.append(f"{i}. {p['title']} by {p['artist']} ({p['genre']}): {p['why']}")
-    return "\n".join(lines)
+def _mentions_song(text: str, song: Dict) -> bool:
+    title = song["title"]
+    if not contains_phrase(text, title):
+        return False
+    if len(title.split()) > 1:
+        return True
+    quoted = any(contains_phrase(text, q + title + q) for q in ('"', "'"))
+    return quoted or contains_phrase(text, _primary_artist(song["artist"]))
+
+
+def _describe(song: Dict) -> str:
+    energy = "high-energy" if song["energy"] >= 0.7 else "mellow" if song["energy"] <= 0.4 else "mid-tempo"
+    tone = "bright" if song["valence"] >= 0.65 else "somber" if song["valence"] <= 0.35 else "bittersweet"
+    return f"{energy}, {tone} {song['genre']} track with a {song['mood']} feel"
+
+
+def _fallback_paragraph(profile: Dict, picks: List[Dict]) -> str:
+    """Offline reply: the same short-paragraph shape, written from the ranked songs."""
+    mood = profile["favorite_mood"]
+    genre = profile.get("favorite_genre") or picks[0]["genre"]
+    first, rest = picks[0], picks[1:]
+    text = (f"Since you're in a {mood} mood, {genre} is a good place to start. "
+            f"\"{first['title']}\" by {first['artist']} is a {_describe(first)}, "
+            f"so it sits close to how you're feeling.")
+    if rest:
+        others = " and ".join(f"\"{s['title']}\" by {s['artist']}" for s in rest)
+        text += (f" {others} keep a similar energy and positivity, "
+                 f"so they fit the same {mood} space.")
+    return text
 
 
 if __name__ == "__main__":

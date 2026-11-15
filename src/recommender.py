@@ -2,6 +2,11 @@ import csv
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, asdict
 
+try:
+    from src.catalog import genre_family, mood_family, norm, normalize_song
+except ModuleNotFoundError:
+    from catalog import genre_family, mood_family, norm, normalize_song
+
 @dataclass
 class Song:
     """
@@ -63,66 +68,76 @@ def load_songs(csv_path: str) -> List[Dict]:
             row["id"] = int(row["id"])
             for key in ("energy", "tempo_bpm", "valence", "danceability", "acousticness"):
                 row[key] = float(row[key])
-            songs.append(row)
+            songs.append(normalize_song(row))  # adds genre_family / mood_family
     return songs
 
-def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
-    """Scores one song against the user's genre, mood and energy, returning (score, reasons)."""
-    # TODO: Implement scoring logic using your Algorithm Recipe from Phase 2.
-    # Expected return format: (score, reasons)
+# Points per component. Mood/genre are now grouped into families (src/catalog.py),
+# so a match means something; energy no longer outweighs both of them together.
+WEIGHTS = {
+    "genre_family": 1.0,   # same family ("rock" vs "alternative rock")
+    "genre_exact": 0.5,    # bonus for the exact subgenre
+    "mood": 1.5,           # same mood family ("sad" vs "heartbroken")
+    "energy": 3.0,         # x (1 - |energy - target|)^2
+    "valence": 2.5,        # x (1 - |valence - target|)^2, only if target_valence is set
+    "acoustic": 0.5,       # x acousticness (or 1 - acousticness)
+}
+MAX_SCORE = sum(WEIGHTS.values())  # 9.0 with valence; profiles without it top out at 6.5
+
+
+def score_song(user_prefs: Dict, song: Dict, weights: Dict = None) -> Tuple[float, List[str]]:
+    """Scores one song against the user's genre, mood, energy, valence and acoustic taste."""
+    w = weights or WEIGHTS
     score = 0.0
     reasons = []
 
-    # Weights: genre match = 0.75 points, mood match = 1.0 point,
-    # energy closeness = up to 4.0 points, acoustic fit = up to 0.5 points
-    # (max total 6.25), plus valence closeness = up to 2.0 points when the
-    # profile has a target_valence (max total 8.25)
-    GENRE_POINTS = 0.75
-    MOOD_POINTS = 1.0
-    ENERGY_POINTS = 4.0
-    ACOUSTIC_POINTS = 0.5
-    VALENCE_POINTS = 2.0
+    # Genre: full credit for the exact subgenre, partial for the same family.
+    # Matching is case-insensitive ("Pop" == "pop").
+    wanted_genre = norm(user_prefs.get("favorite_genre"))
+    if wanted_genre:
+        song_genre = norm(song["genre"])
+        song_family = song.get("genre_family") or genre_family(song_genre)
+        if wanted_genre == song_genre:
+            points = w["genre_family"] + w["genre_exact"]
+            score += points
+            reasons.append(f"Genre matches favorite (+{points:.2f})")
+        elif genre_family(wanted_genre) == song_family:
+            score += w["genre_family"]
+            reasons.append(f"Same genre family: {song_family} (+{w['genre_family']:.2f})")
 
-    if song["genre"] == user_prefs.get("favorite_genre"):
-        score += GENRE_POINTS
-        reasons.append(f"Genre matches favorite (+{GENRE_POINTS})")
-    if song["mood"] == user_prefs.get("favorite_mood"):
-        score += MOOD_POINTS
-        reasons.append(f"Mood matches favorite (+{MOOD_POINTS})")
+    # Mood: compared by family, so "sad" matches "heartbroken" and "despairing".
+    wanted_mood = norm(user_prefs.get("favorite_mood"))
+    if wanted_mood:
+        song_mood = song.get("mood_family") or mood_family(song["mood"])
+        if mood_family(wanted_mood) == song_mood:
+            score += w["mood"]
+            reasons.append(f"Mood matches favorite (+{w['mood']:.2f})")
 
-    # Numerical feature: reward closeness to the target, not higher/lower values.
-    # similarity = (1 - |difference|)^2 (features are on a 0-1 scale), scaled by weight.
-    # Squaring makes big misses cost much more than small ones, so energy
-    # actually separates songs instead of giving near-max points to everything.
+    # Numerical features reward closeness to the target, not higher/lower values.
+    # similarity = (1 - |difference|)^2; squaring makes big misses cost much more.
     target_energy = user_prefs.get("target_energy")
     if target_energy is not None:
-        similarity = max(0.0, 1.0 - abs(song["energy"] - target_energy)) ** 2
-        energy_score = ENERGY_POINTS * similarity
+        energy_score = w["energy"] * max(0.0, 1.0 - abs(song["energy"] - target_energy)) ** 2
         score += energy_score
         reasons.append(f"Energy closeness (+{energy_score:.2f})")
 
     # Valence (how positive a song sounds) is the strongest mood signal.
-    # Same closeness rule as energy. Profiles without target_valence skip it,
-    # so the original CLI profiles score exactly as before.
     target_valence = user_prefs.get("target_valence")
     if target_valence is not None:
-        similarity = max(0.0, 1.0 - abs(song["valence"] - target_valence)) ** 2
-        valence_score = VALENCE_POINTS * similarity
+        valence_score = w["valence"] * max(0.0, 1.0 - abs(song["valence"] - target_valence)) ** 2
         score += valence_score
         reasons.append(f"Valence closeness (+{valence_score:.2f})")
 
-    # Acoustic fit: acoustic fans earn points for high acousticness,
-    # everyone else for low acousticness.
+    # Acoustic fit: acoustic fans earn points for high acousticness, others for low.
     likes_acoustic = user_prefs.get("likes_acoustic")
     if likes_acoustic is not None:
         fit = song["acousticness"] if likes_acoustic else 1.0 - song["acousticness"]
-        acoustic_score = ACOUSTIC_POINTS * fit
+        acoustic_score = w["acoustic"] * fit
         score += acoustic_score
         reasons.append(f"Acoustic fit (+{acoustic_score:.2f})")
 
     return score, reasons
 
-def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
+def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5, weights: Dict = None) -> List[Tuple[Dict, float, str]]:
     """Scores every song and returns the top k as (song, score, explanation), highest first."""
     # TODO: Implement scoring and ranking logic
     # Expected return format: (song_dict, score, explanation)
@@ -138,6 +153,6 @@ def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tup
     scored = (
         (song, score, "; ".join(reasons))
         for song in songs
-        for score, reasons in [score_song(user_prefs, song)]
+        for score, reasons in [score_song(user_prefs, song, weights)]
     )
     return sorted(scored, key=lambda item: item[1], reverse=True)[:k]

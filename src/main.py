@@ -11,15 +11,17 @@ You will implement the functions in recommender.py:
 
 try:
     # python -m src.main (from the project root)
-    from src.recommender import load_songs, recommend_songs
+    from src.recommender import WEIGHTS, load_songs, recommend_songs
 except ModuleNotFoundError:
     # python src/main.py
-    from recommender import load_songs, recommend_songs
+    from recommender import WEIGHTS, load_songs, recommend_songs
 
 
 # Taste profiles: the targets every song is compared against.
 # Keys mirror the UserProfile dataclass, so UserProfile(**prefs) also works.
-#   favorite_genre / favorite_mood: exact match earns the genre / mood points
+#   favorite_genre: exact subgenre = full genre points, same family (e.g. "rock"
+#     vs "alternative rock") = partial. Case-insensitive.
+#   favorite_mood: matched by mood family ("sad" covers "heartbroken")
 #   target_energy: 0-1; songs closer to this score higher
 #   likes_acoustic: True rewards acoustic songs, False rewards non-acoustic ones
 PROFILES = {
@@ -29,8 +31,8 @@ PROFILES = {
         "target_energy": 0.85,
         "likes_acoustic": False,
     },
-    "Chill Lofi": {
-        "favorite_genre": "lofi",
+    "Chill Acoustic": {
+        "favorite_genre": "acoustic pop",
         "favorite_mood": "chill",
         "target_energy": 0.35,
         "likes_acoustic": True,
@@ -42,7 +44,7 @@ PROFILES = {
         "likes_acoustic": False,
     },
     "Sad Banger (conflict)": {
-        "favorite_genre": "blues",
+        "favorite_genre": "pop ballad",
         "favorite_mood": "sad",
         "target_energy": 0.9,
         "likes_acoustic": False,
@@ -95,7 +97,11 @@ def main() -> None:
         print_recommendations(name, user_prefs, recommendations)
 
 
-MAX_SCORE = 6.25  # genre 0.75 + mood 1.0 + energy 4.0 + acoustic 0.5
+def max_score(user_prefs: dict) -> float:
+    """Best possible score for this profile (valence only counts if the profile sets it)."""
+    total = sum(WEIGHTS.values())
+    return total if "target_valence" in user_prefs else total - WEIGHTS["valence"]
+
 WIDTH = 60
 
 
@@ -112,13 +118,14 @@ def print_recommendations(name: str, user_prefs: dict, recommendations: list) ->
 
     for rank, (song, score, explanation) in enumerate(recommendations, start=1):
         # Bar of 20 blocks, filled in proportion to the max possible score
-        filled = round(20 * score / MAX_SCORE)
+        best = max_score(user_prefs)
+        filled = round(20 * score / best)
         bar = "#" * filled + "." * (20 - filled)
 
         print()
         print(f" {rank}. {song['title']}  -  {song['artist']}")
         print(f"    {song['genre']} / {song['mood']}")
-        print(f"    Score: {score:.2f} / {MAX_SCORE}  [{bar}]")
+        print(f"    Score: {score:.2f} / {best:.2f}  [{bar}]")
         print("    Why:")
         for reason in explanation.split("; "):
             print(f"      - {reason}")

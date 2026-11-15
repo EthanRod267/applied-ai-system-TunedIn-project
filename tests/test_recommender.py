@@ -63,7 +63,9 @@ def test_explain_recommendation_returns_non_empty_string():
 
 # --- valence + functional scoring -----------------------------------------
 
-from src.recommender import score_song, recommend_songs
+from src.recommender import WEIGHTS, MAX_SCORE, score_song, recommend_songs
+
+W = WEIGHTS
 
 
 def _song(**overrides):
@@ -76,15 +78,44 @@ def test_valence_term_rewards_closeness():
     prefs = {"target_valence": 0.2}
     close, _ = score_song(prefs, _song(valence=0.2))
     far, _ = score_song(prefs, _song(valence=0.9))
-    assert close == 2.0  # full VALENCE_POINTS for an exact match
+    assert close == W["valence"]  # full points for an exact match
     assert far < close
 
 
-def test_profiles_without_valence_score_as_before():
+def test_perfect_match_without_valence():
     prefs = {"favorite_genre": "pop", "favorite_mood": "happy", "target_energy": 0.5, "likes_acoustic": False}
     score, reasons = score_song(prefs, _song())
-    assert score == 0.75 + 1.0 + 4.0 + 0.25
+    assert score == W["genre_family"] + W["genre_exact"] + W["mood"] + W["energy"] + W["acoustic"] * 0.5
     assert not any("Valence" in r for r in reasons)
+
+
+def test_scores_never_exceed_max_score():
+    prefs = {"favorite_genre": "pop", "favorite_mood": "happy", "target_energy": 0.5,
+             "target_valence": 0.5, "likes_acoustic": True}
+    score, _ = score_song(prefs, _song(acousticness=1.0))
+    assert score == MAX_SCORE
+
+
+def test_matching_is_case_insensitive():
+    prefs = {"favorite_genre": "Pop", "favorite_mood": "Happy"}
+    score, _ = score_song(prefs, _song())
+    assert score == W["genre_family"] + W["genre_exact"] + W["mood"]
+
+
+def test_genre_family_gets_partial_credit():
+    prefs = {"favorite_genre": "rock"}
+    family, reasons = score_song(prefs, _song(genre="alternative rock"))
+    assert family == W["genre_family"]
+    assert "family" in reasons[0]
+    exact, _ = score_song({"favorite_genre": "alternative rock"}, _song(genre="alternative rock"))
+    assert exact > family
+    other, _ = score_song(prefs, _song(genre="synthpop"))
+    assert other == 0
+
+
+def test_mood_matches_by_family():
+    score, _ = score_song({"favorite_mood": "sad"}, _song(mood="heartbroken"))
+    assert score == W["mood"]
 
 
 def test_sad_profile_ranks_low_valence_song_first():

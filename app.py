@@ -15,7 +15,7 @@ st.title("🎵 TunedIn")
 st.caption("Tell me how you're feeling and I'll find songs that fit.")
 
 
-SECRET_NAMES = ("LLM_PROVIDER", "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL")
+SECRET_NAMES = ("GEMINI_API_KEY", "GEMINI_MODEL")
 
 
 def load_secrets():

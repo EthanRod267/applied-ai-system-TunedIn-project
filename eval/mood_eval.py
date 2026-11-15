@@ -2,7 +2,7 @@
 Layer 2: how well does each model read the user's mood?
 
     python -m eval.mood_eval                 # keyword baseline + fine-tuned (if trained)
-    python -m eval.mood_eval --with-llm      # also the LLM: Gemini or Claude (calls the API)
+    python -m eval.mood_eval --with-llm      # also Gemini (calls the API)
 
 For each case in eval/mood_cases.csv it checks:
 - mood accuracy: predicted catalog mood == expected_mood
@@ -28,7 +28,7 @@ class LLMMoodModel:
     def __init__(self):
         self.bot = TunedInBot(mood_model=KeywordMoodModel())
         if self.bot.llm is None:
-            raise RuntimeError("No LLM available: set GEMINI_API_KEY (or ANTHROPIC_API_KEY)")
+            raise RuntimeError("Gemini unavailable: set GEMINI_API_KEY")
         self.name = self.bot.llm.name
 
     def predict(self, message):

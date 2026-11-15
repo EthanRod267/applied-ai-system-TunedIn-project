@@ -1,21 +1,21 @@
 message,expected_mood,energy_min,energy_max,valence_min,valence_max
 my dog is sick and I can't focus on anything,sad,0.0,0.5,0.0,0.45
 I just got the job!!! let's gooo,euphoric,0.7,1.0,0.65,1.0
-need to grind through this essay tonight,focused,0.3,0.6,0.4,0.8
+need to grind through this essay tonight,chill,0.3,0.6,0.4,0.8
 my grandma passed away this morning,melancholy,0.0,0.4,0.0,0.35
 honestly I'm so angry I could scream,angry,0.75,1.0,0.0,0.4
-rough day I just want to zone out,relaxed,0.1,0.5,0.4,0.8
+rough day I just want to zone out,chill,0.1,0.5,0.4,0.8
 feeling really lonely tonight,sad,0.0,0.45,0.0,0.4
 date night with my partner,romantic,0.35,0.65,0.55,0.9
 so stressed about my exam tomorrow,chill,0.2,0.5,0.3,0.7
 I'm in such a good mood today,happy,0.65,1.0,0.7,1.0
-just finished my last final ever,relaxed,0.2,0.6,0.55,0.9
+just finished my last final ever,chill,0.2,0.6,0.55,0.9
 ugh everything is annoying me today,angry,0.65,1.0,0.1,0.45
 feeling proud of myself for once,confident,0.6,0.9,0.6,0.9
 I'm so grateful for my friends,uplifting,0.4,0.75,0.7,1.0
 it's my birthday and we're going out tonight,euphoric,0.75,1.0,0.7,1.0
 we broke up last night,sad,0.0,0.45,0.0,0.35
-studying for the MCAT all day,focused,0.3,0.6,0.4,0.8
+studying for the MCAT all day,chill,0.3,0.6,0.4,0.8
 that video was hilarious lol,playful,0.55,0.85,0.7,1.0
 I regret what I said to him,melancholy,0.1,0.45,0.0,0.4
 feeling hopeful about the new semester,uplifting,0.5,0.8,0.7,1.0
@@ -27,5 +27,5 @@ just chilling on a sunday,chill,0.2,0.5,0.45,0.75
 I love this person so much,romantic,0.35,0.65,0.6,0.9
 can't believe I nailed that interview,confident,0.65,0.95,0.65,0.95
 my coworker keeps interrupting me and I'm fed up,angry,0.65,1.0,0.1,0.45
-need something for a calm evening reading,relaxed,0.1,0.45,0.45,0.8
+need something for a calm evening reading,chill,0.1,0.45,0.45,0.8
 feeling kind of blah not sure why,moody,0.25,0.55,0.25,0.55

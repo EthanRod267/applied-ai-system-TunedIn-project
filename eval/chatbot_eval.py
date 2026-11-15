@@ -2,7 +2,7 @@
 Layer 3: end-to-end reliability of the chatbot.
 
     python -m eval.chatbot_eval --offline    # no API: mood model + ranked-list fallback (free)
-    python -m eval.chatbot_eval              # full pipeline with the LLM (Gemini or Claude)
+    python -m eval.chatbot_eval              # full pipeline with Gemini (uses the API)
     python -m eval.chatbot_eval --runs 3     # repeat each case to measure consistency
 
 Checks per case (eval/chatbot_cases.csv):
@@ -20,6 +20,7 @@ import csv
 from pathlib import Path
 from statistics import mean, median
 
+from src.catalog import genre_family
 from src.chatbot import TunedInBot
 
 CASES = Path(__file__).resolve().parent / "chatbot_cases.csv"
@@ -60,8 +61,9 @@ def check_case(bot, case, reply):
         checks["relevant"] = (case["energy_min"] <= e <= case["energy_max"]
                               and case["valence_min"] <= v <= case["valence_max"])
     if category == "genre":
-        named = [g for g in bot.genres if g in case["message"].lower()]
-        checks["genre"] = any(p["genre"] in named for p in reply.picks)
+        # A pick passes if it's the named subgenre or in the named genre's family.
+        family = genre_family(bot.named_genre(case["message"]))
+        checks["genre"] = any(p["genre_family"] == family for p in reply.picks)
     return checks
 
 

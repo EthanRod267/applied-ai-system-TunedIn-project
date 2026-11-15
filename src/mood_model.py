@@ -11,17 +11,30 @@ Two models share one interface, predict(message) -> MoodPrediction:
 
 Both predict a GoEmotions emotion label. EMOTION_PROFILES then maps that label
 onto a mood from data/songs.csv plus target energy / valence / acoustic values.
+Moods here are the canonical moods from src/catalog.py (each groups several
+catalog moods, e.g. "sad" covers "heartbroken" and "despairing"). The keyword
+model also picks a genre: the one the user names, otherwise the catalog's most
+common genre family for the detected mood.
 """
 
+import csv
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "mood_classifier"
+try:
+    from src.catalog import find_named_genre, normalize_song
+except ModuleNotFoundError:
+    from catalog import find_named_genre, normalize_song
 
-# GoEmotions label -> (song mood, target_energy, target_valence, likes_acoustic)
-# Moods are the labels used in data/songs.csv. The numbers place each emotion
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MODEL_DIR = ROOT / "models" / "mood_classifier"
+SONGS_CSV = ROOT / "data" / "songs.csv"
+
+# GoEmotions label -> (canonical mood, target_energy, target_valence, likes_acoustic)
+# Every mood here must have at least one catalog song (tests/test_catalog.py). The numbers place each emotion
 # on the energy (calm -> excited) and valence (sad -> happy) axes.
 EMOTION_PROFILES: Dict[str, tuple] = {
     "admiration":     ("uplifting",  0.60, 0.80, False),
@@ -31,7 +44,7 @@ EMOTION_PROFILES: Dict[str, tuple] = {
     "approval":       ("confident",  0.65, 0.70, False),
     "caring":         ("romantic",   0.45, 0.70, True),
     "confusion":      ("moody",      0.50, 0.45, False),
-    "curiosity":      ("focused",    0.45, 0.60, True),
+    "curiosity":      ("chill",      0.45, 0.60, True),
     "desire":         ("romantic",   0.55, 0.70, False),
     "disappointment": ("sad",        0.30, 0.25, True),
     "disapproval":    ("moody",      0.60, 0.35, False),
@@ -46,8 +59,8 @@ EMOTION_PROFILES: Dict[str, tuple] = {
     "nervousness":    ("chill",      0.35, 0.50, True),
     "optimism":       ("uplifting",  0.65, 0.85, False),
     "pride":          ("confident",  0.75, 0.75, False),
-    "realization":    ("focused",    0.45, 0.60, True),
-    "relief":         ("relaxed",    0.35, 0.70, True),
+    "realization":    ("chill",      0.45, 0.60, True),
+    "relief":         ("chill",      0.35, 0.70, True),
     "remorse":        ("melancholy", 0.25, 0.25, True),
     "sadness":        ("sad",        0.30, 0.20, True),
     "surprise":       ("energetic",  0.80, 0.70, False),
@@ -62,7 +75,7 @@ class MoodPrediction:
     emotion: str          # GoEmotions label, e.g. "grief"
     confidence: float     # 0-1; how sure the model is
     profile: Dict         # keys match recommender.UserProfile
-    source: str           # which model produced it ("keyword", "fine-tuned", "claude")
+    source: str           # which model produced it ("keyword", "fine-tuned", "gemini")
 
 
 def profile_for_emotion(emotion: str) -> Dict:
@@ -109,10 +122,50 @@ def _contains(text: str, keyword: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", text) is not None
 
 
+MIN_SONGS_FOR_DEFAULT_GENRE = 2
+
+
+def genre_for_each_mood(songs: List[Dict]) -> Dict[str, str]:
+    """
+    Most common genre family per mood family (ties go to the song listed first).
+    A mood only gets a default genre if at least MIN_SONGS_FOR_DEFAULT_GENRE of
+    its songs share that family, so one song can't steer a whole mood
+    (e.g. the only "chill" song is dancehall, which shouldn't make chill = latin).
+    """
+    counts: Dict[str, Counter] = {}
+    for s in songs:
+        if "mood_family" not in s:
+            normalize_song(s)
+        counts.setdefault(s["mood_family"], Counter())[s["genre_family"]] += 1
+    defaults = {}
+    for mood, c in counts.items():
+        genre, n = c.most_common(1)[0]
+        if n >= MIN_SONGS_FOR_DEFAULT_GENRE:
+            defaults[mood] = genre
+    return defaults
+
+
+def _read_catalog() -> List[Dict]:
+    with open(SONGS_CSV, newline="", encoding="utf-8") as f:
+        return [normalize_song({"genre": r["genre"], "mood": r["mood"]}) for r in csv.DictReader(f)]
+
+
 class KeywordMoodModel:
-    """Counts keyword hits per emotion. Confidence is the winner's share of hits."""
+    """
+    Counts keyword hits per emotion (confidence = the winner's share of hits),
+    then sets the profile's genre:
+    1. a genre the user names, e.g. "some blues" -> blues
+    2. else, if mood words were found, the catalog's usual genre family for
+       that mood (e.g. angry -> rock)
+    3. else no genre preference
+    """
 
     name = "keyword"
+
+    def __init__(self, songs: Optional[List[Dict]] = None):
+        songs = songs if songs is not None else _read_catalog()
+        self.genres = sorted({s["genre"].lower() for s in songs})
+        self.mood_genre = genre_for_each_mood(songs)
 
     def predict(self, message: str) -> MoodPrediction:
         text = message.lower()
@@ -122,9 +175,17 @@ class KeywordMoodModel:
         }
         best = max(hits, key=hits.get)
         total = sum(hits.values())
-        if total == 0:
-            return MoodPrediction("neutral", 0.0, profile_for_emotion("neutral"), self.name)
-        return MoodPrediction(best, hits[best] / total, profile_for_emotion(best), self.name)
+        emotion = best if total else "neutral"
+        profile = profile_for_emotion(emotion)
+
+        named = find_named_genre(text, self.genres)
+        if named:
+            profile["favorite_genre"] = named
+        elif total:
+            profile["favorite_genre"] = self.mood_genre.get(profile["favorite_mood"], "")
+
+        confidence = hits[best] / total if total else 0.0
+        return MoodPrediction(emotion, confidence, profile, self.name)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +216,7 @@ class FineTunedMoodModel:
         return MoodPrediction(emotion, float(probs[idx]), profile_for_emotion(emotion), self.name)
 
 
-def load_mood_model(model_dir: Path = DEFAULT_MODEL_DIR):
+def load_mood_model(model_dir: Path = DEFAULT_MODEL_DIR, songs: Optional[List[Dict]] = None):
     """Returns the fine-tuned model if it's trained and loadable, else the keyword baseline."""
     if Path(model_dir).joinpath("config.json").exists():
         try:
@@ -163,4 +224,4 @@ def load_mood_model(model_dir: Path = DEFAULT_MODEL_DIR):
         except ImportError:
             print("Fine-tuned model found but torch/transformers aren't installed; "
                   "using the keyword baseline. See requirements-train.txt.")
-    return KeywordMoodModel()
+    return KeywordMoodModel(songs)

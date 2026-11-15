@@ -1,8 +1,8 @@
-"""Provider selection tests. No API calls: only checks which provider would be chosen."""
+"""Gemini setup tests. No API calls: only checks when a client gets built."""
 
-from src.llm import detect_provider, make_llm
+from src.llm import has_gemini_key, make_llm
 
-KEYS = ("LLM_PROVIDER", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY")
+KEYS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 
 def _clear(monkeypatch):
@@ -10,36 +10,16 @@ def _clear(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
-def test_no_keys_means_offline(monkeypatch):
+def test_no_key_means_offline(monkeypatch):
     _clear(monkeypatch)
-    assert detect_provider() is None
+    assert not has_gemini_key()
     assert make_llm() is None
 
 
-def test_gemini_key_selects_gemini_even_with_anthropic_key(monkeypatch):
+def test_google_api_key_also_works(monkeypatch):
     _clear(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY", "test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-    assert detect_provider() == "gemini"
-
-
-def test_anthropic_key_alone_selects_claude(monkeypatch):
-    _clear(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-    assert detect_provider() == "claude"
-
-
-def test_llm_provider_overrides_detection(monkeypatch):
-    _clear(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY", "test")
-    monkeypatch.setenv("LLM_PROVIDER", "Claude")
-    assert detect_provider() == "claude"
-
-
-def test_unknown_provider_runs_offline(monkeypatch):
-    _clear(monkeypatch)
-    monkeypatch.setenv("LLM_PROVIDER", "nope")
-    assert make_llm() is None
+    monkeypatch.setenv("GOOGLE_API_KEY", "test")
+    assert has_gemini_key()
 
 
 def test_gemini_client_builds_with_a_key(monkeypatch):

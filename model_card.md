@@ -1,141 +1,198 @@
-# 🎧 Model Card: Music Recommender Simulation
+# 🎧 Model Card: TunedIn
 
-## 1. Model Name  
+## 1. Model Name
 
-**TuneJudge 1.0**
-
-It works like a judge. It hands out points to every song and picks the winners.
+**TunedIn 2.0**, a mood-aware music chatbot. It grew out of **TuneJudge 1.0**, a command-line scorer (see [Version history](#10-version-history)).
 
 ---
 
-## 2. Goal and Intended Use  
+## 2. Goal and Intended Use
 
 ### Goal / Task
 
-TuneJudge suggests 5 songs for one listener. You tell it your favorite genre, your favorite mood, how much energy you want, and whether you like acoustic music. It scores every song and shows the 5 best fits. It also explains why each song was picked.
+You tell TunedIn how you feel in your own words ("rough day, I just want to zone out"). It works out your mood, finds matching songs in its catalog, and answers with a short paragraph naming a genre and 2–3 songs, with the reason each one fits.
 
 ### Intended use
 
-- Classroom practice for learning how recommenders work.
-- Testing how scoring rules and weights change the results.
-- Small, made-up listener profiles.
+- Classroom project for learning retrieval-augmented generation (RAG), fine-tuning and evaluation.
+- Trying out how mood reading, scoring weights and catalog design change recommendations.
 
 ### Not intended for
 
-- Real music apps or real users. The catalog has only 20 songs.
-- Judging what music is "good." It only measures fit with your settings.
-- Anyone whose taste can't be described by one genre, one mood, and one energy level.
+- Real users in distress. Crisis detection is a keyword list, not a safety system (see section 6).
+- Judging what music is "good." It only measures fit with a mood.
+- A real music service. The catalog has 50 songs.
 
 ---
 
-## 3. How the Model Works  
+## 3. How the Model Works
 
-TuneJudge looks at each song one at a time and gives it points:
+Three steps run for each message:
 
-- **Same genre as your favorite:** 0.75 points.
-- **Same mood as your favorite:** 1 point.
-- **Energy close to what you asked for:** up to 4 points. A perfect match gets all 4. Points drop fast as the gap grows, so a song far from your target gets almost nothing.
-- **Acoustic fit:** up to 0.5 points. If you like acoustic music, more acoustic songs score higher. If you don't, less acoustic songs score higher.
+1. **Read the mood.** A local mood model guesses the emotion first:
+   - **Keyword model:** matches about 150 mood words, then sets a target energy and positivity (valence) for that emotion. It also picks a genre: one you name ("some rock"), or else the catalog's usual genre for that mood.
+   - **Fine-tuned model (optional):** DistilBERT trained on GoEmotions (about 58k labeled comments). It replaces the keyword model once trained.
+   - **Gemini:** if the local model is less than 60% confident, Gemini (`gemini-3.5-flash-lite`) reads the mood instead.
+2. **Retrieve songs.** Every song gets points for fitting the mood, and the top 5 go to the next step:
 
-A perfect song scores 6.25. TuneJudge sorts all songs from highest to lowest and shows the top 5.
+   | Component | Points |
+   | --- | --- |
+   | Same genre family (e.g. "rock" vs "alternative rock") | +1.0 |
+   | Exact subgenre (bonus) | +0.5 |
+   | Same mood family (e.g. "sad" vs "heartbroken") | +1.5 |
+   | Energy closeness | up to +3.0 × (1 − \|energy − target\|)² |
+   | Positivity (valence) closeness | up to +2.5 × (1 − \|valence − target\|)² |
+   | Acoustic fit | up to +0.5 |
 
-**Example:** a happy pop fan who wants energy 0.85 gets *Sunrise City* first (5.92). It's pop, it's happy, its energy is 0.82, and it isn't acoustic.
+   The maximum is 9.0. Matching ignores capital letters.
+3. **Write the reply.** Gemini sees only those 5 songs and writes one short paragraph. Code checks the reply before showing it:
+   - Gemini can only pick song IDs from the 5 retrieved songs.
+   - If the paragraph names any other catalog song, the reply is rejected.
+   - If Gemini fails or is rejected, TunedIn writes the paragraph itself from the ranked list.
 
-Genre and mood must match exactly. "indie pop" does not count as "pop."
-
-**How I got here:** the starter code just returned the first 5 songs in the file. My first version weighted genre at 2 and energy at 1.5. I then added acoustic scoring, made energy misses cost more, and shifted weight from genre to energy.
-
----
-
-## 4. Data  
-
-- **20 songs.** The starter had 10. I added 10 more.
-- **17 genres and 16 moods.** Most appear only once. Lofi is the biggest genre, with 3 songs.
-- **Features:** genre, mood, energy, tempo, valence (how positive it sounds), danceability, and acousticness.
-- **Used in scoring:** genre, mood, energy, and acousticness. Tempo, valence, and danceability are ignored.
-
-**Limits:**
-
-- Mood is tied to energy. Every sad, chill, or melancholy song is quiet. Every intense, angry, or euphoric song is loud.
-- There is no energetic sad song and no calm angry song.
-- Almost every loud song is electric. Barn Burner is the only loud acoustic song.
-- No lyrics, language, artist popularity, or release year.
+**Safety checks run first.** Crisis messages (such as "I don't want to be here anymore") get a support message with the 988 lifeline, with no songs and no API call. An empty message gets a prompt to share how you feel.
 
 ---
 
-## 5. Strengths  
+## 4. Data
 
-- It works well for common tastes. High-Energy Pop, Chill Lofi, and Deep Intense Rock all get the obvious #1 song.
-- Every pick comes with reasons, so you can see why it was chosen.
-- It doesn't break on missing genres. Asking for "k-pop" still returns happy songs at the right energy.
-- Opposite tastes get opposite lists. Pop and Lofi share no songs.
+### Song catalog (`data/songs.csv`)
 
----
+- **50 popular songs**, from "Blinding Lights" to "Bohemian Rhapsody." Each has genre, mood, energy, tempo, valence, danceability and acousticness.
+- **Source:** _TODO: say where the songs and audio features came from (e.g. a Kaggle dataset name and link, or Spotify's API before its November 2024 changes), the license, and who chose the mood labels._
+- **Specific labels are grouped into families** (`src/catalog.py`):
+  - 26 genres become 8 families: pop, rock, metal, hip-hop, r&b, electronic, folk, latin.
+  - 37 moods become 14 mood families. For example, "heartbroken" and "despairing" both count as "sad."
+  - A test fails if a new song uses a genre or mood that isn't mapped.
 
-## 6. Limitations and Bias 
+**Songs per family:**
 
-**Energy beats everything else.** Energy is worth up to 4 points. A perfect genre and mood match is worth only 1.75. So if your favorite genre's songs are more than about 0.25 away from your energy target, another genre wins.
+| Genre family | Songs | Mood family | Songs |
+| --- | --- | --- | --- |
+| pop | 20 | romantic | 7 |
+| rock | 13 | melancholy | 6 |
+| r&b | 4 | nostalgic, moody | 5 each |
+| hip-hop | 4 | intense | 4 |
+| electronic | 4 | happy, sad, playful, uplifting, confident, euphoric, angry | 3 each |
+| latin | 2 | chill, energetic | 1 each |
+| folk | 2 | | |
+| metal | 1 | | |
 
-For example, a classical/melancholy fan who wants energy 0.6 got a reggae song first. The only classical song dropped to #3.
+### Mood-reading data
 
-**Some tastes can't be served.** The catalog ties mood to energy. A listener who wants energetic sad music gets loud songs with no sadness. The system drops the mood without saying so.
+- **Fine-tuning:** GoEmotions (Google Research), plus 40 hand-written examples in `training/custom_examples.csv`.
+- **Evaluation:** 30 hand-labeled messages in `eval/mood_cases.csv`. They're kept separate from the training examples.
 
-**Some songs get shown more than others.** I tested 5,000 random listeners. Quiet songs in the crowded 0.28–0.48 energy range showed up as much as 1.9× their fair share. Loud songs at the edges, like Iron Collapse, showed up less than half as often.
+### Limits of the data
 
-**Exact matching is fragile.** "Pop" and "pop" count as different words. "indie pop" gets no credit for "pop."
-
----
-
-## 7. Evaluation  
-
-### Profiles tested
-
-I tested 10 listener profiles: three normal tastes (High-Energy Pop, Chill Lofi, Deep Intense Rock) and seven tricky ones (Sad Banger, Case Trap, Acoustic Metalhead, Out of Range, Near-Miss Genre, Genre Ghost, Blank Slate). For each, I checked whether the #1 song was something that person would actually want and whether the rest of the top 5 made sense or was just filler.
-
-### What surprised me
-
-Gym Hero made the top 5 for 6 of the 10 profiles, and the "sad but high energy" listener got zero sad songs because the only sad song in the catalog is slow. Typing "Pop" instead of "pop" also made the system ignore genre and mood entirely, since it compares words exactly.
-
-### Comparing pairs of profiles
-
-**High-Energy Pop vs. Chill Lofi:** These two share no songs: Pop gets bright, loud songs and Lofi gets quiet, acoustic study music. That makes sense, because they sit at opposite ends of both the energy scale and the acoustic setting.
-
-**High-Energy Pop vs. Deep Intense Rock (why Gym Hero keeps showing up):** Gym Hero is a very loud pop song, so the system gives it points for "pop" or "intense" plus nearly full energy points, and it never takes points away for having the wrong mood. Since the catalog only has two happy songs, the next best pick for a happy pop fan is simply the loudest pop song.
-
-**Deep Intense Rock vs. Sad Banger:** Both want energy 0.9, and their top 5 lists are identical because no song in the catalog is both sad and loud. Rock gets a real match, but the sad fan just gets the loudest songs, which is explainable but not a good result.
-
-**High-Energy Pop vs. Case Trap:** The only difference is capital letters, yet Sunrise City's score dropped from 5.92 to 4.17 and Rooftop Lights fell off the list. The system sees "Pop" and "pop" as different words, so this is a bug, not a difference in taste.
-
-**High-Energy Pop vs. Near-Miss Genre:** Lowering energy from 0.85 to 0.76 moved Rooftop Lights up to a close #2 and pushed the very loud Gym Hero out of the top 5. That makes sense, though Rooftop Lights still gets no genre credit because "indie pop" isn't exactly "pop."
-
-**Near-Miss Genre vs. Genre Ghost:** Asking for "k-pop," which isn't in the catalog, returns nearly the same list as "pop," just with smaller scores. This is a sensible fallback: the system still finds happy songs at the right energy instead of breaking.
-
-**Acoustic Metalhead vs. Out of Range:** Iron Collapse is #1 for both, but an impossible energy of 1.8 cut its score from 5.76 to 2.35 and dropped every other song below 0.6. The system doesn't check its inputs, so only the genre and mood matches kept the right song on top.
-
-**Chill Lofi vs. Acoustic Metalhead:** Both say they like acoustic music, but Lofi gets all acoustic songs and the Metalhead gets almost none. The acoustic setting is worth only 0.5 points against energy's 4, and every high-energy song in the catalog is electric.
-
-**Chill Lofi vs. Blank Slate:** Lofi gets a focused list of lofi and chill songs, while Blank Slate gets a mix of R&B, country, lofi and reggae. Without a genre or mood, energy near 0.5 is the only thing left to sort by.
-
-### Other checks I ran
-
-Changing the weights three times changed the #1 song for only one profile, and checking about 294,000 combinations showed every score stays between 0 and 6.25 and matches its "Why" explanation. A test with 5,000 random listeners showed quiet songs appearing up to 1.9× their fair share while loud songs at the edges appeared less than half as often, and `pytest` passes (2 tests).
+- **Pop-heavy:** 40% of the songs are pop and 26% are rock. There's one metal song and no jazz, classical, country or blues.
+- **Few quiet songs:** only 5 have energy below 0.4, and only 3 have energy above 0.85.
+- **Thin moods:** "chill" and "energetic" have one song each.
+- **Mood labels can disagree with the audio features.** "Perfect" is labeled romantic but has valence 0.17, which Spotify-style data reads as sad-sounding.
+- **No lyrics, language, or listening history.**
 
 ---
 
-## 8. Ideas for Improvement  
+## 5. Strengths
 
-1. **Rebalance the weights.** Try genre 1.0, mood 1.0, and energy 2.5. This would let a strong genre and mood match beat a slightly better energy match.
-2. **Add more varied songs.** Several songs per genre and mood would give real choices beyond #1. It also needs missing combos, like energetic sad songs and calm intense songs.
-3. **Make matching smarter.** Ignore capital letters. Give partial credit for related genres, like "pop" and "indie pop." Add a "don't care" option for acoustic music.
+- **Grounded replies:** in every test so far, every song in a reply came from the catalog and from that request's retrieved songs. Gemini can't invent songs.
+- **Keeps working without Gemini.** If the API is down or there's no key, it still returns songs, using the keyword model and its own paragraph.
+- **Related genres now count.** Asking for "rock" credits "alternative rock," and "rap" finds hip-hop.
+- **Capital letters don't matter.** "Pop" now matches "pop," fixing a v1 bug.
+- **Explains itself.** Each pick has scoring reasons, and the app shows how the mood was read.
 
 ---
 
-## 9. Personal Reflection  
+## 6. Limitations and Bias
 
-A few sentences about your experience.  
+- **Crisis detection is basic.** It's a short list of phrases, so indirect wording can slip past it. It's a guardrail for a class project, not a substitute for real safety tooling.
+- **Quiet songs get over-shown.** In a test with 5,000 random listeners:
+  - Each song's fair share was 500 appearances.
+  - "When I Was Your Man" appeared 1,080 times (2.2×), and "Love Yourself" and "Lovely" about 1.7× each. With so few quiet songs, they win every low-energy request.
+  - Mid-energy songs compete with many others, so some barely appear: "Counting Stars" 85 times (0.17×), "Heat Waves" 108 (0.22×).
+- **Genre exposure follows the catalog.** Pop is 40% of songs and 42% of what's shown, and rock is 26% and 22%. So pop gets more chances simply because there's more of it.
+- **The keyword model has gaps.** It has no words for "birthday" or "hype me up," for example, so it reads them as neutral. In the app these low-confidence cases go to Gemini; offline they get calm songs.
+- **Defaults are skipped for thin moods.** A mood only gets a default genre if at least 2 of its songs share a genre family, because one song shouldn't decide a whole mood.
+- **Privacy:** messages describe how someone feels and are sent to Google's Gemini API. Google's free tier may use prompts to improve its products; paid-tier keys are not used that way. Users should know this before sharing anything personal.
 
-Prompts:  
+---
 
-- What you learned about recommender systems  
-- Something unexpected or interesting you discovered  
-- How this changed the way you think about music recommendation apps  
+## 7. Evaluation
+
+### Unit tests
+
+47 `pytest` tests pass, with no API calls. They cover scoring, genre and mood families, the mood models, provider setup, fallbacks, grounding, title matching, crisis handling, and checks that every catalog genre and mood is mapped.
+
+### Mood reading (`python -m eval.mood_eval`)
+
+| Model | Mood accuracy | Energy in range | Valence in range |
+| --- | --- | --- | --- |
+| Keyword baseline | 87% | 93% | 90% |
+| Fine-tuned DistilBERT | _TODO: train with `python training/train_mood.py`, then rerun_ | | |
+| Gemini | _TODO: `python -m eval.mood_eval --with-llm`_ | | |
+
+**Caveat:** the keyword list and these 30 test messages were written in the same session, so 87% is likely higher than the model would score on new messages. A fair number needs 20–30 new messages written without looking at the keyword list.
+
+### Full chatbot, offline (`python -m eval.chatbot_eval --offline`)
+
+| Check | Pass rate |
+| --- | --- |
+| Grounded (songs from the retrieved set only) | 100% (15/15) |
+| Relevant (picks' energy and positivity fit the mood) | 80% (12/15) |
+| Genre (named genre honored) | 100% (3/3) |
+| Safety (crisis messages get the 988 reply) | 100% (3/3) |
+| Robust (edge cases get a reply, no crashes) | 100% (19/19) |
+| Consistency (same picks across runs) | 1.00 |
+
+The 3 relevance failures are the keyword gaps described above ("birthday," "pump me up," "hype me up").
+
+With Gemini: _TODO: run `python -m eval.chatbot_eval --runs 3` and paste the table here._
+
+### Choosing the weights
+
+I compared three weight sets on the 30 test moods, using the new catalog:
+
+| Weights | #1 song matches mood | Top-5 mood matches | Energy error | Valence error | Songs ever shown |
+| --- | --- | --- | --- | --- | --- |
+| v1 (genre 0.75, mood 1.0, energy 4.0, valence 2.0) | 70% | 39% | 0.078 | 0.148 | 39/50 |
+| **Current** (genre 1.0 + 0.5, mood 1.5, energy 3.0, valence 2.5) | **87%** | **45%** | 0.096 | 0.140 | **41/50** |
+| Valence-heavy (mood 1.0, energy 2.5, valence 3.0) | 77% | 42% | 0.106 | 0.119 | 41/50 |
+
+- **Why the current weights won:** the #1 song matches the mood far more often, at a small cost in energy closeness.
+- **Caveat:** these test profiles already contain the expected mood, so raising the mood weight helps them by design. That's why energy and valence error are in the table as a counter-check.
+- **Top-5 mood matches can't reach 100%,** because most mood families have only 3–7 songs.
+
+---
+
+## 8. Ideas for Improvement
+
+1. **Train the full fine-tuned model,** and compare it with the keyword baseline and Gemini on new, unseen messages.
+2. **Add quiet and very loud songs, and more non-pop genres.** That would fix the over-exposure of the 5 quiet songs and the pop skew.
+3. **Grow the thin moods.** "Chill" and "energetic" have one song each.
+4. **Add a small boost for rarely shown songs,** so mid-energy songs like "Counting Stars" get a turn.
+5. **Use a stronger crisis classifier** in place of the keyword list.
+
+---
+
+## 9. Personal Reflection
+
+_TODO: a few sentences in your own words._
+
+Prompts:
+
+- What you learned about recommender systems and RAG
+- Something unexpected or interesting you discovered
+- How this changed the way you think about music recommendation apps
+
+---
+
+## 10. Version history
+
+**TuneJudge 1.0** was a command-line scorer over 20 made-up songs (17 genres, 16 moods, most used once), with exact text matching. Its main findings drove the 2.0 changes:
+
+- **Energy dominated.** Energy was worth up to 4 points, while a perfect genre and mood match was worth only 1.75. A classical/melancholy fan who wanted energy 0.6 got a reggae song first.
+- **Exact matching was fragile.** "Pop" and "pop" were different words, which cut a song's score from 5.92 to 4.17. "indie pop" got no credit for "pop."
+- **Some tastes couldn't be served.** No song was both sad and loud, so a "sad banger" listener got only loud songs.
+- **Exposure was uneven.** Quiet songs in a crowded energy range appeared up to 1.9× their fair share.
+
+2.0 answered these with genre and mood families, case-insensitive matching, a valence term, rebalanced weights and a larger catalog. It also added mood reading from free text, Gemini replies with grounding checks, and an evaluation suite.

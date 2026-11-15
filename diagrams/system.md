@@ -4,7 +4,7 @@ TunedIn is a mood-aware music chatbot. It reads how a user feels, retrieves
 matching songs from `data/songs.csv`, and writes a recommendation grounded only
 in those retrieved songs (Retrieval-Augmented Generation).
 
-**LLM:** Gemini by default (`src/llm.py`); Claude is a drop-in alternative via `LLM_PROVIDER`.
+**LLM:** Gemini (`src/llm.py`). Replies are a short paragraph explaining the genre and songs.
 
 **Legend:** everything below is built. The fine-tuned classifier needs one training run
 (`python training/train_mood.py`); until then the keyword baseline fills that slot.

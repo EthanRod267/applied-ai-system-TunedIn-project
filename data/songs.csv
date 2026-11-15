@@ -1,21 +1,51 @@
 id,title,artist,genre,mood,energy,tempo_bpm,valence,danceability,acousticness
-1,Sunrise City,Neon Echo,pop,happy,0.82,118,0.84,0.79,0.18
-2,Midnight Coding,LoRoom,lofi,chill,0.42,78,0.56,0.62,0.71
-3,Storm Runner,Voltline,rock,intense,0.91,152,0.48,0.66,0.10
-4,Library Rain,Paper Lanterns,lofi,chill,0.35,72,0.60,0.58,0.86
-5,Gym Hero,Max Pulse,pop,intense,0.93,132,0.77,0.88,0.05
-6,Spacewalk Thoughts,Orbit Bloom,ambient,chill,0.28,60,0.65,0.41,0.92
-7,Coffee Shop Stories,Slow Stereo,jazz,relaxed,0.37,90,0.71,0.54,0.89
-8,Night Drive Loop,Neon Echo,synthwave,moody,0.75,110,0.49,0.73,0.22
-9,Focus Flow,LoRoom,lofi,focused,0.40,80,0.59,0.60,0.78
-10,Rooftop Lights,Indigo Parade,indie pop,happy,0.76,124,0.81,0.82,0.35
-11,Concrete Verses,Block Theory,hip-hop,confident,0.78,92,0.62,0.85,0.12
-12,Dusty Backroads,Willow Creek,country,nostalgic,0.55,104,0.70,0.58,0.74
-13,Winter Nocturne,Clara Voss,classical,melancholy,0.18,66,0.22,0.20,0.97
-14,Iron Collapse,Grave Engine,metal,angry,0.97,176,0.25,0.45,0.03
-15,Velvet Hours,Amara Lane,r&b,romantic,0.48,84,0.68,0.74,0.38
-16,Harbor Sunshine,Roots Harbor,reggae,uplifting,0.60,76,0.88,0.80,0.45
-17,Bassline Fever,Kilowatt Kids,edm,euphoric,0.95,128,0.79,0.90,0.02
-18,Barn Burner,The Hollow Pines,folk,energetic,0.84,140,0.83,0.70,0.88
-19,Fuego Lento,Sol y Sombra,reggaeton,playful,0.72,96,0.86,0.91,0.15
-20,Empty Station Blues,Muddy Hollis,blues,sad,0.32,70,0.20,0.40,0.80
+1,Blinding Lights,The Weeknd,synthpop,nostalgic,0.73,171,0.33,0.51,0.00
+2,Shape of You,Ed Sheeran,pop,flirty,0.65,96,0.93,0.83,0.58
+3,Sweater Weather,The Neighbourhood,alternative rock,moody,0.81,124,0.40,0.61,0.05
+4,Starboy,The Weeknd & Daft Punk,r&b,dark,0.59,186,0.49,0.68,0.14
+5,As It Was,Harry Styles,synthpop,melancholic,0.73,174,0.66,0.52,0.34
+6,One Dance,"Drake, Wizkid & Kyla",dancehall,chill,0.63,104,0.37,0.79,0.01
+7,Sunflower,Post Malone & Swae Lee,hip hop,upbeat,0.48,90,0.91,0.76,0.56
+8,Someone You Loved,Lewis Capaldi,pop ballad,heartbroken,0.41,110,0.45,0.50,0.75
+9,Perfect,Ed Sheeran,pop ballad,romantic,0.45,95,0.17,0.60,0.16
+10,Stay,The Kid Laroi & Justin Bieber,pop,anxious,0.76,170,0.48,0.59,0.04
+11,Die With A Smile,Lady Gaga & Bruno Mars,soul pop,romantic,0.59,158,0.54,0.52,0.31
+12,I Wanna Be Yours,Arctic Monkeys,indie rock,yearning,0.42,135,0.48,0.46,0.14
+13,Birds of a Feather,Billie Eilish,indie pop,romantic,0.51,105,0.44,0.75,0.20
+14,Yellow,Coldplay,alternative rock,hopeful,0.66,173,0.29,0.43,0.00
+15,The Night We Met,Lord Huron,indie folk,wistful,0.37,174,0.10,0.45,0.97
+16,Believer,Imagine Dragons,pop rock,defiant,0.78,125,0.67,0.78,0.06
+17,Riptide,Vance Joy,indie folk,carefree,0.73,102,0.51,0.48,0.43
+18,Heat Waves,Glass Animals,indie pop,nostalgic,0.53,81,0.53,0.76,0.44
+19,Closer,The Chainsmokers & Halsey,edm pop,nostalgic,0.52,95,0.66,0.75,0.41
+20,Lovely,Billie Eilish & Khalid,alt pop,despairing,0.30,115,0.12,0.35,0.93
+21,Every Breath You Take,The Police,rock,obsessive,0.45,117,0.74,0.82,0.54
+22,Iris,The Goo Goo Dolls,alternative rock,yearning,0.72,156,0.49,0.32,0.00
+23,Something Just Like This,The Chainsmokers & Coldplay,edm pop,uplifting,0.64,103,0.45,0.62,0.05
+24,Another Love,Tom Odell,indie pop,heartbroken,0.54,123,0.13,0.45,0.70
+25,Say You Won't Let Go,James Arthur,acoustic pop,romantic,0.56,85,0.45,0.36,0.69
+26,Counting Stars,OneRepublic,pop rock,restless,0.71,122,0.48,0.66,0.07
+27,Take Me to Church,Hozier,soul rock,intense,0.66,129,0.44,0.57,0.63
+28,Photograph,Ed Sheeran,acoustic pop,sentimental,0.38,108,0.20,0.61,0.61
+29,Viva La Vida,Coldplay,alternative rock,epic,0.62,138,0.42,0.49,0.10
+30,Locked Out of Heaven,Bruno Mars,pop funk,euphoric,0.70,144,0.87,0.73,0.05
+31,Can't Hold Us,Macklemore & Ryan Lewis ft. Ray Dalton,hip hop,triumphant,0.92,146,0.85,0.64,0.03
+32,Mr. Brightside,The Killers,indie rock,jealous,0.92,148,0.24,0.35,0.00
+33,Just the Way You Are,Bruno Mars,pop,romantic,0.84,109,0.42,0.64,0.01
+34,Dance Monkey,Tones and I,pop,playful,0.59,98,0.51,0.82,0.69
+35,Cruel Summer,Taylor Swift,synthpop,euphoric,0.70,170,0.56,0.55,0.12
+36,Die For You,The Weeknd,r&b,longing,0.53,134,0.50,0.59,0.11
+37,Rockstar,Post Malone & 21 Savage,trap,dark,0.52,160,0.13,0.59,0.12
+38,Señorita,Shawn Mendes & Camila Cabello,latin pop,sultry,0.55,117,0.75,0.76,0.04
+39,That's What I Like,Bruno Mars,r&b,flirty,0.56,134,0.86,0.85,0.01
+40,In The End,Linkin Park,nu metal,frustrated,0.86,105,0.40,0.56,0.01
+41,Watermelon Sugar,Harry Styles,pop rock,sunny,0.82,95,0.56,0.55,0.12
+42,Love Yourself,Justin Bieber,acoustic pop,bitter,0.38,100,0.52,0.61,0.84
+43,Don't Start Now,Dua Lipa,disco pop,empowered,0.79,124,0.68,0.79,0.01
+44,When I Was Your Man,Bruno Mars,piano ballad,regretful,0.28,145,0.39,0.61,0.93
+45,Billie Jean,Michael Jackson,funk pop,paranoid,0.65,117,0.85,0.92,0.02
+46,Circles,Post Malone,pop rock,melancholic,0.76,120,0.55,0.70,0.19
+47,Bohemian Rhapsody,Queen,progressive rock,dramatic,0.40,72,0.23,0.39,0.29
+48,Without Me,Eminem,hip hop,cocky,0.66,112,0.66,0.91,0.00
+49,Let Me Love You,DJ Snake & Justin Bieber,edm pop,tender,0.72,100,0.16,0.48,0.09
+50,Wake Me Up,Avicii & Aloe Blacc,edm folk,uplifting,0.78,124,0.64,0.53,0.00
