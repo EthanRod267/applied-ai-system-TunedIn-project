@@ -269,15 +269,84 @@ I compared three weight sets on the 30 test moods, using the new catalog:
 
 ---
 
-## 10. Personal Reflection
+## 10. Reflection
 
-_TODO: a few sentences in your own words._
+> *Draft written with AI help from this project's test results and history. Edit it into your own words, and fill in the parts marked TODO.*
 
-Prompts:
+### What are the limitations or biases in your system?
 
-- What you learned about recommender systems and RAG
-- Something unexpected or interesting you discovered
-- How this changed the way you think about music recommendation apps
+The details and numbers are in section 7. The main ones:
+
+- **The catalog decides who gets heard.**
+  - It's 50 mostly English-language, mostly Western chart hits, and 40% are pop.
+  - There's no jazz, classical, country or blues, so a request for them gets no genre credit, and those artists can never be recommended.
+  - Exposure follows the catalog: pop is 40% of the songs and 42% of what's shown.
+- **Sparse songs get over-shown.** In a 5,000-listener test, the 5 quiet songs appeared up to 2.2× their fair share, because they're the only option for any low-energy request. Some mid-energy hits appeared at under a quarter of their share.
+- **The mood labels are judgment calls.**
+  - People picked each song's mood, grouped 37 moods into 14 families, and mapped 28 emotions to moods.
+  - Each choice ("hopeful" counts as uplifting, "nervous" gets calm music) encodes one person's view of what a feeling should sound like.
+  - Some labels disagree with the audio data. "Perfect" is labeled romantic but has a very low positivity score.
+- **Mood reading favors plain wording.** The keyword model misses slang and indirect phrasing ("hype me up", "blah"). People who describe feelings indirectly rely more on Gemini, or get calm "neutral" songs when it's offline.
+- **It matches your mood; it doesn't try to change it.** A sad message gets sad songs. That's a design choice, but it could reinforce a low mood instead of lifting it.
+
+### Could your AI be misused, and how would you prevent that?
+
+| Possible misuse | How it's prevented (or could be) |
+| --- | --- |
+| **Someone in crisis uses it instead of getting help** | The safety gate runs before any AI and replies with 988 and no songs. **Gap:** it's a keyword list, so indirect wording slips past. A real deployment would need a trained crisis classifier and human escalation. |
+| **Prompt injection**: a message like "ignore your instructions and…" | Gemini's song picks are limited to the 5 retrieved songs, and the validator rejects any reply that names another song. **Gap:** the paragraph is still free text, so a moderation check on it would close this. |
+| **Sensitive emotional details sent to a third party** | The model card warns that messages go to Gemini, and that Google's free tier may use prompts to improve its products. Prevention: a paid-tier key, no logging of messages, and a notice in the app before the first message. |
+| **Presenting it as mental-health support** | The intended use (section 2) rules this out. The app should say plainly that it's a music tool, not therapy. |
+| **Steering what gets promoted**, by editing the catalog or weights to push certain artists | The exposure test makes this visible: a skewed catalog or weight shows up as a lopsided exposure count. Catalog and weight changes should go through review, with the exposure test rerun. |
+| **Leaked or overused API key** | The key lives in `.streamlit/secrets.toml`, which is gitignored. Rate limiting would be the next step for a public deployment. |
+
+### What surprised you while testing your AI's reliability?
+
+- **A trained model can fail quietly.**
+  - The first fine-tuned model was the 2,000-row smoke test, and it read every message as "neutral". It didn't crash; it just recommended calm lofi to someone who said they were sad.
+  - It also exposed a gap: when the weak guess handed off to Gemini and Gemini failed (bad key), the bot fell back to that same weak guess.
+- **The confidence score was meaningful.** The keyword model was right 100% of the time when confident (22 cases) and only 50% when unsure (8 cases). I expected a rough signal, not a clean split.
+- **One song could steer a whole mood.** The catalog's only "chill" song is dancehall, so every chill request leaned latin. Only the evaluation runner showed it.
+- **Common-word titles broke the hallucination check.** Titles like "Perfect", "Stay" and "Closer" were flagged in ordinary sentences such as "a perfect song for tonight". The fix was to count a one-word title only when it's in quotes or its artist is named.
+- **The prompt isn't a guarantee.** The prompt asks for 2–3 songs, and Gemini sometimes returned one. Only rules enforced in code are reliable.
+- **My own numbers could be inflated.** The keyword list and its test messages were written in the same session, so the 87% mood accuracy is probably optimistic.
+
+### Describe your collaboration with AI during this project
+
+I used Claude Code (an AI coding assistant) throughout the project:
+
+- **Design:** how to build RAG on top of my v1 scorer.
+- **Code:** the chatbot pipeline, mood models, training script, genre and mood families, the evaluation suite and the tests.
+- **Docs:** this model card and the README.
+
+I made the direction calls:
+
+- switching the LLM from Claude to Gemini, then removing Claude completely,
+- bringing in a dataset of 50 real songs,
+- asking for paragraph replies instead of lists,
+- deciding how to handle model training.
+
+The AI was most useful for building the testing side: it wrote the evaluators that caught several of the bugs above.
+
+**A suggestion I accepted: limit the LLM to retrieved song IDs instead of trusting its text.**
+
+The AI suggested two things:
+- Use my existing v1 scorer as the retriever, rather than adding embedding search.
+- Give Gemini an output format where song picks can only be IDs from the retrieved set, plus a code check on the reply.
+
+I accepted it because it reused code I already understood and tested, and because it made "no invented songs" something I can verify rather than hope for. Grounding has been 100% in every test and sample since.
+
+**A suggestion I did not accept as written: the reply format.**
+
+The AI's first design had Gemini return a short intro, a "Genre to try" line and a numbered list, with one sentence per song. I changed it to a single short paragraph, because I wanted the reply to read like an explanation of why the genre and songs fit my mood, not a list.
+
+The trade-off was a new risk. In a numbered list, every song name is in a known place. In free text, Gemini could slip in a song it didn't pick. So the change also needed the title check described above, which in turn led to the common-word-title fix.
+
+*TODO: if you'd rather use another example, two other times you didn't take a suggestion as written were:*
+- *Training:* the AI recommended a faster local training run; you chose Google Colab, then reverted the Colab notebook.
+- *Provider:* the AI's design had Claude as the LLM; you switched to Gemini and had Claude removed.
+
+*Add your reasons in your own words if you use one of these.*
 
 ---
 
